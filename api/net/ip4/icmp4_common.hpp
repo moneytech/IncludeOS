@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_IP4_ICMP4_COMMON_HPP
@@ -34,7 +18,7 @@ namespace net {
     PARAMETER_PROBLEM   = 12,
     TIMESTAMP           = 13,
     TIMESTAMP_REPLY     = 14,
-    NO_REPLY            = 100,  // Custom: Type in ICMP_packet if no ping reply received
+    NO_REPLY            = 100,  // Custom: Type in ICMP_view if no ping reply received
     NO_ERROR            = 200
   };
 
@@ -45,7 +29,7 @@ namespace net {
       HOST,
       PROTOCOL,
       PORT,
-      FRAGMENTATION,
+      FRAGMENTATION_NEEDED,
       SRC_ROUTE,
       NET_UNKNOWN,          // RFC 1122
       HOST_UNKNOWN,
@@ -118,8 +102,8 @@ namespace net {
             return "PROTOCOL (2)";
           case code::Dest_unreachable::PORT:
             return "PORT (3)";
-          case code::Dest_unreachable::FRAGMENTATION:
-            return "FRAGMENTATION (4)";
+          case code::Dest_unreachable::FRAGMENTATION_NEEDED:
+            return "FRAGMENTATION NEEDED (4)";
           case code::Dest_unreachable::SRC_ROUTE:
             return "SOURCE ROUTE (5)";
           case code::Dest_unreachable::NET_UNKNOWN:

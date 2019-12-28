@@ -5,7 +5,6 @@
 *.a
 *.o
 *.out
-*.log
 *.iso
 *.qcow2
 *.vdi
@@ -15,35 +14,41 @@
 *.pyc
 *.ropeproject
 *.xml
+*.img
+*.img.*
+*.gz
+*.tar
+*nacl.txt
+.DS_Store
 nbproject
+dummy.disk
+callgraph.svg
+massif.out.*
 
 !Dockerfile
 
-src/apic_boot.bin
-src/bootloader
-src/TAGS
-
-src/.codelite/
-src/compile_commands.json
-*.project
-*.workspace
-
-*.img
-*.img.*
-
-*.gz
-
-.DS_Store
-
 /.vagrant
-/examples/demo_service/IncludeOS_Demo_Service
-/seed/My_Service
-
 build/
 build_i686/
 build_x86_64/
+build_conan/
+
+# ignore log files in test tree
+test/**/*.log
 
 # cmake related
 CMakeFiles*
 CMakeCache*
 cmake_install.cmake
+
+# Vim
+*.swp
+
+#CLion
+.idea/
+
+# Starbase disk file
+lib/uplink/starbase/disk
+
+!Jenkinsfile
+!CHANGELOG

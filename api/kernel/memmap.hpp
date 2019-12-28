@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef KERNEL_MEMMAP_HPP
@@ -24,6 +8,8 @@
 #include <delegate>
 #include <map>
 #include <string>
+
+namespace os::mem {
 
 /**
  * This type is used to represent an error that occurred
@@ -55,9 +41,6 @@ public:
    * @param name
    *   The name of the memory range
    *
-   * @param description
-   *   The description of the memory range
-   *
    * @param in_use_operation
    *   The operation to perform when bytes_in_use is called
    *
@@ -65,30 +48,7 @@ public:
    *   IIf (begin > end) or ((end - begin + 1) > max_size())
    */
   Fixed_memory_range(const uintptr_t begin, const uintptr_t end, const char* name,
-                     const std::string& description, In_use_delg in_use_operation);
-
-  /**
-   * Constructor
-   *
-   * @param begin
-   *   The beginning address of the memory range
-   *
-   * @param end
-   *   The end address of the memory range
-   *
-   * @param name
-   *   The name of the memory range
-   *
-   * @param description
-   *   The description of the memory range
-   *
-   * @throws Memory_range_exception
-   *   IIf (begin > end) or ((end - begin + 1) > max_size())
-   */
-  Fixed_memory_range(const uintptr_t begin, const uintptr_t end, const char* name,
-                     const std::string& description)
-    : Fixed_memory_range(begin, end, name, description, nullptr)
-  {}
+                     In_use_delg in_use_operation);
 
   /**
    * Constructor
@@ -106,26 +66,8 @@ public:
    *   IIf (begin > end) or ((end - begin + 1) > max_size())
    */
   Fixed_memory_range(const uintptr_t begin, const uintptr_t end, const char* name)
-    : Fixed_memory_range(begin, end, name, "N/A")
+    : Fixed_memory_range(begin, end, name, nullptr)
   {}
-
-  /**
-   * Constructor
-   *
-   * @param range
-   *   The memory range
-   *
-   * @param name
-   *   The name of the memory range
-   *
-   * @param description
-   *   The description of the memory range
-   *
-   * @throws Memory_range_exception
-   *   IIf (range.addr_start() > range.addr_end()) or
-   *       ((range.addr_end() - range.addr_start() + 1) > max_size())
-   */
-  Fixed_memory_range(Memory_range&& range, const char* name, const std::string& description);
 
   /**
    * Constructor
@@ -231,14 +173,6 @@ public:
    */
   const char* name() const noexcept
   { return name_; }
-
-  /**
-   * Get the description of the memory range
-   *
-   * @return The description of the memory range
-   */
-  const std::string& description() const noexcept
-  { return description_; }
 
   /**
    * The start address of the memory range
@@ -364,7 +298,6 @@ public:
 private:
   Memory_range range_;
   const char*  name_;
-  std::string  description_;
   In_use_delg  in_use_op_;
 }; //< class Fixed_memory_range
 
@@ -467,6 +400,14 @@ public:
   const Map& map() const noexcept
   { return map_; }
 
+  void erase(Key k) {
+    map_.erase(k);
+  }
+
+  void clear() {
+    map_.clear();
+  }
+
   /**
    * Operator to transform this class into its raw representation
    */
@@ -508,4 +449,5 @@ private:
   Map map_;
 }; //< class Memory_map
 
+} // ns os::mem
 #endif //< KERNEL_MEMMAP_HPP

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 /**
    @note This virtionet implementation was very much inspired by
@@ -36,9 +20,11 @@
 #include <common>
 #include <hw/pci_device.hpp>
 #include <virtio/virtio.hpp>
+#include <net/packet.hpp>
 #include <net/buffer_store.hpp>
 #include <net/link_layer.hpp>
 #include <net/ethernet/ethernet.hpp>
+#include <net/ethernet/ethernet_8021q.hpp> // vlan header size
 #include <delegate>
 #include <deque>
 #include <statman>
@@ -117,8 +103,8 @@ public:
   using Link          = net::Link_layer<net::Ethernet>;
   using Link_protocol = Link::Protocol;
 
-  static std::unique_ptr<Nic> new_instance(hw::PCI_Device& d)
-  { return std::make_unique<VirtioNet>(d); }
+  static std::unique_ptr<Nic> new_instance(hw::PCI_Device& d, const uint16_t MTU)
+  { return std::make_unique<VirtioNet>(d, MTU); }
 
   /** Human readable name. */
   const char* driver_name() const override {
@@ -132,16 +118,13 @@ public:
   uint16_t MTU() const noexcept override
   { return 1500; }
 
-  uint16_t packet_len() const noexcept {
-    return sizeof(net::ethernet::Header) + MTU();
+  uint16_t max_packet_len() const noexcept {
+    return sizeof(net::ethernet::VLAN_header) + MTU();
   }
 
   net::Packet_ptr create_packet(int) override;
 
-  size_t frame_offset_device() override
-  { return sizeof(virtio_net_hdr); };
-
-  net::downstream create_physical_downstream()
+  net::downstream create_physical_downstream() override
   { return {this, &VirtioNet::transmit}; }
 
 
@@ -149,7 +132,7 @@ public:
   void transmit(net::Packet_ptr pckt);
 
   /** Constructor. @param pcidev an initialized PCI device. */
-  VirtioNet(hw::PCI_Device& pcidev);
+  VirtioNet(hw::PCI_Device& pcidev, uint16_t MTU);
 
   /** Space available in the transmit queue, in packets */
   size_t transmit_queue_available() override {
@@ -158,15 +141,20 @@ public:
 
   bool link_up() const noexcept;
 
+  auto& bufstore() noexcept { return bufstore_; }
+
   void deactivate() override;
+
+  void flush() override {
+    tx_q.kick();
+  };
 
   void move_to_this_cpu() override;
 
-private:
+  void poll() override;
 
-  /** Stats */
-  uint64_t& packets_rx_;
-  uint64_t& packets_tx_;
+private:
+  hw::PCI_Device& m_pcidev;
 
   struct virtio_net_hdr {
     uint8_t flags;
@@ -208,11 +196,8 @@ private:
   /** Get virtio PCI config. @see Virtio::get_config.*/
   void get_config();
 
-  /** Add packet to buffer chain */
-  void add_to_tx_buffer(net::Packet_ptr pckt);
-
-  /** Add packet chain to virtio queue */
-  void enqueue(net::Packet* pckt);
+  /** Add packet to transmit ring */
+  void enqueue_tx(net::Packet* pckt);
 
   /** Handle device IRQ.
       Will look for config changes and service RX/TX queues as necessary.*/
@@ -232,7 +217,20 @@ private:
   bool deferred_kick = false;
   static void handle_deferred_devices();
 
-  net::Packet_ptr transmit_queue_ {nullptr};
+  net::BufferStore bufstore_;
+
+  /** Stats */
+  uint64_t& stat_sendq_max_;
+  uint64_t& stat_sendq_now_;
+  uint64_t& stat_sendq_limit_dropped_;
+  uint64_t& stat_rx_refill_dropped_;
+  uint64_t& stat_bytes_rx_total_;
+  uint64_t& stat_bytes_tx_total_;
+  uint64_t& stat_packets_rx_total_;
+  uint64_t& stat_packets_tx_total_;
+
+  std::deque<net::Packet_ptr> sendq{};
+
 };
 
 #endif

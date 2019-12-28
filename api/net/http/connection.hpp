@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2016-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef HTTP_CONNECTION_HPP
@@ -23,16 +7,16 @@
 #include "request.hpp"
 #include "response.hpp"
 
-#include <net/tcp/connection.hpp>
+#include <net/tcp/stream.hpp>
 
 namespace http {
 
   class Connection {
   public:
-    using Stream        = net::tcp::Connection::Stream;
+    using Stream        = net::Stream;
     using Stream_ptr    = std::unique_ptr<Stream>;
     using Peer          = net::Socket;
-    using buffer_t      = net::tcp::buffer_t;
+    using buffer_t      = net::Stream::buffer_t;
 
   public:
     inline explicit Connection(Stream_ptr stream, bool keep_alive = true);
@@ -42,14 +26,14 @@ namespace http {
 
     inline explicit Connection() noexcept;
 
-    net::tcp::port_t local_port() const noexcept
-    { return (stream_) ? stream_->local_port() : 0; }
+    uint16_t local_port() const noexcept
+    { return (stream_) ? stream_->local().port() : 0; }
 
     Peer peer() const noexcept
     { return peer_; }
 
     void timeout()
-    { stream_->is_closing() ? stream_->abort() : stream_->close(); }
+    { stream_->close(); }
 
     auto& stream() const
     { return stream_; }
@@ -121,7 +105,7 @@ namespace http {
 
   template <typename TCP>
   Connection::Connection(TCP& tcp, Peer addr)
-    : Connection(std::make_unique<Stream>(tcp.connect(addr)))
+    : Connection(std::make_unique<net::tcp::Stream>(tcp.connect(addr)))
   {
   }
 
@@ -142,8 +126,7 @@ namespace http {
   {
     auto copy = std::move(stream_);
 
-    // this is expensive and may be unecessary,
-    // but just to be safe for now
+    // reset delegates before handing out stream
     copy->reset_callbacks();
 
     return copy;

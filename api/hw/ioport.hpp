@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #ifndef HW_IOPORT_HPP
 #define HW_IOPORT_HPP
@@ -23,57 +7,67 @@
 
 namespace hw {
 
-  /** Receive a byte from port.
-      @param port : The port number to receive from
-  */
-  static inline uint8_t inb(int port)
+  static inline uint8_t inb(uint16_t port)
   {
-    int ret;
+    uint8_t ret;
 #if defined(ARCH_x86)
-    asm volatile ("xorl %eax,%eax");
-    asm volatile ("inb %%dx,%%al":"=a" (ret):"d"(port));
+    asm volatile("inb %1,%0" : "=a"(ret) : "Nd"(port));
+#elif defined(ARCH_aarch64)
 #else
-#error "inb() not implemented for selected arch"
+#error "inp() not implemented for selected arch"
 #endif
     return ret;
   }
 
-  /** Send a byte to port.
-      @param port : The port to send to
-      @param data : One byte of data to send to @param port
-  */
-  static inline void outb(int port, uint8_t data) {
-#if defined(ARCH_x86)
-    asm volatile ("outb %%al,%%dx"::"a" (data), "d"(port));
-#else
-#error "outb() not implemented for selected arch"
-#endif
-  }
-
-  /** Receive a word from port.
-      @param port : The port number to receive from
-  */
-  static inline uint16_t inw(int port)
+  static inline uint16_t inw(uint16_t port)
   {
-    int ret;
+    uint16_t ret;
 #if defined(ARCH_x86)
-    asm volatile ("xorl %eax,%eax");
-    asm volatile ("inw %%dx,%%ax":"=a" (ret):"d"(port));
+    asm volatile("inw %1,%0" : "=a"(ret) : "Nd"(port));
+#elif defined(ARCH_aarch64)
 #else
-#error "inw() not implemented for selected arch"
+#error "inpw() not implemented for selected arch"
 #endif
     return ret;
   }
 
-  /** Send a word to port.
-      @param port : The port to send to
-      @param data : One word of data to send to @param port
-  */
-  static inline void outw(int port, uint16_t data) {
+  static inline uint32_t inl(uint16_t port)
+  {
+    uint32_t ret;
 #if defined(ARCH_x86)
-    asm volatile ("outw %%ax,%%dx"::"a" (data), "d"(port));
+    asm volatile("inl %1,%0" : "=a"(ret) : "Nd"(port));
+#elif defined(ARCH_aarch64)
 #else
-#error "outw() not implemented for selected arch"
+#error "inpd() not implemented for selected arch"
+#endif
+    return ret;
+  }
+
+  static inline void outb(uint16_t port, uint8_t data)
+  {
+#if defined(ARCH_x86)
+    asm volatile ("outb %0,%1" :: "a"(data), "Nd"(port));
+#elif defined(ARCH_aarch64)
+#else
+#error "outp() not implemented for selected arch"
+#endif
+  }
+  static inline void outw(uint16_t port, uint16_t data)
+  {
+#if defined(ARCH_x86)
+    asm volatile ("outw %0,%1" :: "a" (data), "Nd"(port));
+#elif defined(ARCH_aarch64)
+#else
+#error "outpw() not implemented for selected arch"
+#endif
+  }
+  static inline void outl(uint16_t port, uint32_t data)
+  {
+#if defined(ARCH_x86)
+    asm volatile ("outl %0,%1" :: "a" (data), "Nd"(port));
+#elif defined(ARCH_aarch64)
+#else
+#error "outpd() not implemented for selected arch"
 #endif
   }
 

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2016-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_WS_WEBSOCKET_HPP
@@ -22,8 +6,10 @@
 #include "header.hpp"
 
 #include <net/http/server.hpp>
-#include <net/http/client.hpp>
+#include <net/http/basic_client.hpp>
+#include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace net {
 
@@ -36,76 +22,86 @@ class WebSocket {
 public:
   class Message {
   public:
-    using Data = std::vector<char>;
-    using Data_it = Data::iterator;
+    using Data     = std::vector<uint8_t>;
+    using Data_it  = Data::iterator;
     using Data_cit = Data::const_iterator;
 
-  public:
-    Message(const char* data, size_t len)
-      : data_{data, data + len}
-    {
-      data_.reserve(header().reported_length());
+    auto extract_vector() noexcept {
+      return std::move(data_);
+    }
+    auto extract_shared_vector() {
+      return std::make_shared<std::vector<uint8_t>> (std::move(data_));
     }
 
-    Message(ws_header&& header)
-    {
-      data_.reserve(header.reported_length());
-      const char* hdr = reinterpret_cast<const char*>(&header);
-      std::copy(hdr, hdr + header.header_length(), std::back_inserter(data_));
-    }
+    std::string to_string() const
+    { return std::string(data(), size()); }
 
-    const ws_header& header() const noexcept
-    { return *(reinterpret_cast<const ws_header*>(data_.data())); }
-
-    op_code opcode() const noexcept
-    { return header().opcode(); }
-
-    auto size() const noexcept
-    { return header().data_length(); }
+    size_t size() const noexcept
+    { return data_.size(); }
 
     Data_it begin() noexcept
-    { return data_.begin() + header().header_length(); }
+    { return data_.begin(); }
 
     Data_it end() noexcept
     { return data_.end(); }
 
     Data_cit cbegin() const noexcept
-    { return data_.begin() + header().header_length(); }
+    { return data_.begin(); }
 
     Data_cit cend() const noexcept
     { return data_.end(); }
 
-    void add(const char* data, size_t len)
-    {
-      //data_.insert(data_.end(), data, data+len);
-      if (data_.capacity() >= data_.size() + len) {
-        data_.insert(data_.end(), data, data+len);
-      }
-      else {
-        throw WS_error{"Exceeding Message size"};
-      }
-    }
-
     const char* data() const noexcept
-    { return data_.data() + header().header_length(); }
+    { return (const char*) data_.data(); }
 
     char* data() noexcept
-    { return data_.data() + header().header_length(); }
+    { return (char*) data_.data(); }
 
-    std::string as_text() const
-    { return std::string(cbegin(), cend()); }
+    Message(const uint8_t* data, size_t len)
+    {
+      const auto* wsh = (ws_header*) data;
+      // setup initial header
+      const size_t hdr_bytes = std::min((size_t) wsh->header_length(), len);
+      std::memcpy(header_.data(), data, hdr_bytes);
+      this->header_length = hdr_bytes;
+      // move forward in buffer
+      data += hdr_bytes; len -= hdr_bytes;
+      // if the header became complete, reserve data
+      if (this->header_complete()) {
+        data_.reserve(header().data_length());
+      }
+      // append any remaining data
+      this->append(data, len);
+    }
+
+    size_t append(const uint8_t* data, size_t len);
 
     bool is_complete() const noexcept
-    { return header().data_length() == (data_.size() - header().header_length()); }
+    { return header_complete() && data_.size() == header().data_length(); }
+
+    const ws_header& header() const noexcept
+    { return *(ws_header*) header_.data(); }
+
+    op_code opcode() const noexcept
+    { return header().opcode(); }
 
     void unmask() noexcept
-    { if (_header().is_masked()) _header().masking_algorithm(); }
+    {
+      if (header().is_masked())
+          writable_header().masking_algorithm(this->data());
+    }
 
   private:
-    std::vector<char> data_;
+    Data data_;
+    std::array<uint8_t, 15> header_;
+    uint8_t header_length = 0;
 
-    ws_header& _header()
-    { return *(reinterpret_cast<ws_header*>(data_.data())); }
+    inline bool header_complete() const noexcept {
+      return header_length >= 2 && header_length >= header().header_length();
+    }
+
+    ws_header& writable_header()
+    { return *(ws_header*) header_.data(); }
 
   }; // < class Message
 
@@ -122,6 +118,12 @@ public:
   typedef delegate<void(uint16_t)>    close_func;
   // error (reason)
   typedef delegate<void(std::string)> error_func;
+  // ping (return value is whether to return pong or not, default yes)
+  typedef delegate<bool(const char* data, size_t len)> ping_func;
+  // pong recv
+  typedef delegate<void(const char* data, size_t len)> pong_func;
+  // if a ping resulted in a timeout
+  typedef delegate<void(WebSocket& ws)> pong_timeout_func;
 
   /**
    * @brief      Upgrade a HTTP Request to a WebSocket connection.
@@ -160,7 +162,7 @@ public:
    * @param[in]  dest      The destination
    * @param[in]  callback  The connect callback
    */
-  static void connect(http::Client&   client,
+  static void connect(http::Basic_client&   client,
                       uri::URI        dest,
                       Connect_handler callback);
 
@@ -184,24 +186,44 @@ public:
    *
    * @return     A Response handler for a http::Client
    */
-  static http::Client::Response_handler
+  static http::Basic_client::Response_handler
   create_response_handler(Connect_handler on_connect, std::string key);
 
   void write(const char* buffer, size_t len, op_code = op_code::TEXT);
-  void write(net::tcp::buffer_t, size_t len, op_code = op_code::TEXT);
+  void write(Stream::buffer_t, op_code = op_code::TEXT);
 
   void write(const std::string& text)
   {
     write(text.c_str(), text.size(), op_code::TEXT);
   }
 
+  void write(const std::shared_ptr<std::vector<unsigned char>> data)
+  {
+    write((char *)data->data(),data->size());
+  }
+
+  bool ping(const char* buffer, size_t len, Timer::duration_t timeout)
+  {
+    ping_timer.start(timeout);
+    return write_opcode(op_code::PING, buffer, len);
+  }
+  bool ping(Timer::duration_t timeout)
+  { return ping(nullptr, 0, timeout); }
+
+  //void ping(Stream::buffer_t, Timer::duration_t timeout);
+
   // close the websocket
-  void close();
+  void close(uint16_t reason = 1000);
+
+  void reset_callbacks();
 
   // user callbacks
   close_func   on_close = nullptr;
   error_func   on_error = nullptr;
   read_func    on_read  = nullptr;
+  ping_func    on_ping  = {this, &WebSocket::default_on_ping};
+  pong_func    on_pong  = nullptr;
+  pong_timeout_func on_pong_timeout = nullptr;
 
   bool is_alive() const noexcept {
     return this->stream != nullptr;
@@ -219,23 +241,58 @@ public:
   // string description for status codes
   static const char* status_code(uint16_t code);
 
+  std::string to_string() const {
+    return stream->to_string();
+  }
+
+  int get_cpuid() const noexcept {
+    return stream->get_cpuid();
+  }
+
+  // 0 == unlimited
+  void set_max_message_size(uint32_t sz) noexcept {
+    max_msg_size = sz;
+  }
+
+  size_t serialize_to(void* p) const /*override*/;
+  /* Create connection from binary data */
+  static std::pair<WebSocket_ptr, size_t> deserialize_from(const void*);
+
   WebSocket(net::Stream_ptr, bool);
-  WebSocket(WebSocket&&);
-  ~WebSocket();
+  ~WebSocket() {
+    assert(m_busy == false && "Cannot delete stream while in its call stack");
+  }
 
 private:
   net::Stream_ptr stream;
+  Timer ping_timer{{this, &WebSocket::pong_timeout}};
   Message_ptr message;
-  bool clientside;
+  uint32_t max_msg_size;
+  bool     clientside;
+  bool     m_busy = false;
+  uint16_t m_deferred_close = 0;
 
   WebSocket(const WebSocket&) = delete;
+  WebSocket(WebSocket&&) = delete;
   WebSocket& operator= (const WebSocket&) = delete;
   WebSocket& operator= (WebSocket&&) = delete;
-  void read_data(net::tcp::buffer_t, size_t);
+  void read_data(Stream::buffer_t);
   bool write_opcode(op_code code, const char*, size_t);
   void failure(const std::string&);
-  void tcp_closed();
-  void reset();
+  void close_callback_once();
+  size_t create_message(const uint8_t*, size_t len);
+  void finalize_message();
+
+  bool default_on_ping(const char*, size_t)
+  { return true; }
+
+  void pong_timeout()
+  {
+    if (on_pong_timeout)
+      on_pong_timeout(*this);
+    else
+      this->close(1000);
+  }
 };
 using WebSocket_ptr = WebSocket::WebSocket_ptr;
 

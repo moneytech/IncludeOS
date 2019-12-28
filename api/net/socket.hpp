@@ -1,25 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_SOCKET_HPP
 #define NET_SOCKET_HPP
 
-#include <net/ip4/addr.hpp>
+#include <net/addr.hpp>
 
 namespace net {
 
@@ -28,17 +12,8 @@ namespace net {
  */
 class Socket {
 public:
-
-  using Address = ip4::Addr;
+  using Address = net::Addr;
   using port_t = uint16_t;
-
-  struct pair_hash {
-    std::size_t operator () (const Socket& s) const {
-      auto h1 = std::hash<Address>{}(s.address());
-      auto h2 = std::hash<port_t>{}(s.port());
-      return h1 ^ h2;
-    }
-  };
 
   /**
    * Constructor
@@ -46,7 +21,11 @@ public:
    * Intialize an empty socket <0.0.0.0:0>
    */
   constexpr Socket() noexcept
-    : address_{}, port_{}
+    : Socket{0}
+  {}
+
+  explicit constexpr Socket(const port_t port) noexcept
+    : addr_{}, port_{port}
   {}
 
   /**
@@ -60,17 +39,30 @@ public:
    * @param port
    *  The port associated with the process
    */
-  constexpr Socket(const Address address, const port_t port) noexcept
-    : address_{address}, port_{port}
+  Socket(Address address, const port_t port) noexcept
+    : addr_{std::move(address)},
+      port_{port}
   {}
+
+  Socket(const Socket& other) noexcept = default;
+  Socket(Socket&& other) noexcept
+    : addr_{std::move(other.addr_)}, port_{other.port_}
+  {}
+  Socket& operator=(const Socket& other) noexcept = default;
+  Socket& operator=(Socket&& other) noexcept
+  {
+    addr_ = std::move(other.addr_);
+    port_ = other.port_;
+    return *this;
+  }
 
   /**
    * Get the socket's network address
    *
    * @return The socket's network address
    */
-  constexpr Address address() const noexcept
-  { return address_; }
+  const Address& address() const noexcept
+  { return addr_; }
 
   /**
    * Get the socket's port value
@@ -85,99 +77,125 @@ public:
    *
    * @return A string representation of this class
    */
-  std::string to_string() const
-  { return address_.str() + ":" + std::to_string(port_); }
+  std::string to_string() const {
+    return (addr_.is_v6()) ? "[" + addr_.to_string() + "]:" + std::to_string(port_)
+      : addr_.to_string() + ":" + std::to_string(port_);
+  }
 
   /**
    * Check if this socket is empty <0.0.0.0:0>
    *
    * @return true if this socket is empty, false otherwise
    */
-  constexpr bool is_empty() const noexcept
-  { return (address_ == 0) and (port_ == 0); }
+  bool is_empty() const noexcept
+  { return (addr_.v6() == ip6::Addr::link_unspecified) and (port() == 0); }
 
-  /**
-   * Operator to check for equality relationship
-   *
-   * @param other
-   *  The socket to check for equality relationship
-   *
-   * @return true if the specified socket is equal, false otherwise
-   */
-  constexpr bool operator==(const Socket& other) const noexcept
-  {
-    return (address() == other.address())
-       and (port() == other.port());
-  }
+  bool operator==(const Socket& other) const noexcept
+  { return addr_ == other.addr_ and port_ == other.port_; }
 
-  /**
-   * Operator to check for inequality relationship
-   *
-   * @param other
-   *  The socket to check for inequality relationship
-   *
-   * @return true if the specified socket is not equal, false otherwise
-   */
-  constexpr bool operator!=(const Socket& other) const noexcept
+  bool operator!=(const Socket& other) const noexcept
   { return not (*this == other); }
 
-  /**
-   * Operator to check for less-than relationship
-   *
-   * @param other
-   *  The socket to check for less-than relationship
-   *
-   * @return true if this socket is less-than the specified socket,
-   * false otherwise
-   */
-  constexpr bool operator<(const Socket& other) const noexcept
+  bool operator<(const Socket& other) const noexcept
   {
-    return (address() < other.address())
-        or ((address() == other.address()) and (port() < other.port()));
+    return addr_ < other.addr_
+        or (addr_ == other.addr_ and port_ < other.port_);
   }
 
-  /**
-   * Operator to check for greater-than relationship
-   *
-   * @param other
-   *  The socket to check for greater-than relationship
-   *
-   * @return true if this socket is greater-than the specified socket,
-   * false otherwise
-   */
-  constexpr bool operator>(const Socket& other) const noexcept
-  { return not (*this < other); }
+  bool operator>(const Socket& other) const noexcept
+  {
+    return addr_ > other.addr_
+        or (addr_ == other.addr_ and port_ > other.port_);
+  }
+
+  bool operator<=(const Socket& other) const noexcept
+  { return (*this < other or *this == other); }
+
+  bool operator>=(const Socket& other) const noexcept
+  { return (*this > other or *this == other); }
 
 private:
-  Address address_;
-  port_t  port_;
+  Address   addr_;
+  port_t    port_;
 
 }; //< class Socket
 
-class Quadruple {
+static_assert(std::is_move_constructible_v<Socket>);
+static_assert(std::is_move_assignable_v<Socket>);
+//static_assert(sizeof(Socket) == 18, "Socket not 18 byte");
 
-public:
-  Quadruple() noexcept
-    : source_{}, destination_{}
+/**
+ * @brief      A pair of Sockets
+ */
+struct Quadruple {
+  Socket src;
+  Socket dst;
+
+  Quadruple() = default;
+  Quadruple(Socket s, Socket d)
+    : src(std::move(s)), dst(std::move(d))
   {}
 
-  Quadruple(const Socket::Address src_address, const Socket::port_t src_port,
-    const Socket::Address dst_address, const Socket::port_t dst_port) noexcept
-    : source_{src_address, src_port}, destination_{dst_address, dst_port}
-  {}
+  bool operator==(const Quadruple& other) const noexcept
+  { return src == other.src and dst == other.dst; }
 
-  const Socket& source() const noexcept
-  { return source_; }
+  bool operator!=(const Quadruple& other) const noexcept
+  { return not (*this == other); }
 
-  const Socket& destination() const noexcept
-  { return destination_; }
+  bool operator<(const Quadruple& other) const noexcept
+  { return src < other.src or (src == other.src and dst < other.dst); }
 
-private:
-  Socket source_;
-  Socket destination_;
+  bool operator>(const Quadruple& other) const noexcept
+  { return src > other.src or (src == other.src and dst > other.dst); }
 
-};  //< class Quadruple
+  bool is_reverse(const Quadruple& other) const noexcept
+  { return src == other.dst and dst == other.src; }
+
+  Quadruple& swap() {
+    std::swap(src, dst);
+    return *this;
+  }
+
+  std::string to_string() const
+  { return src.to_string() + " " + dst.to_string(); }
+
+}; //< struct Quadruple
 
 } //< namespace net
+
+namespace std {
+  template<> struct hash<net::Socket>
+  {
+    typedef net::Socket argument_type;
+    typedef std::size_t result_type;
+    result_type operator()(argument_type const& s) const noexcept
+    {
+      return s.address().v6().i64[0]
+           ^ s.address().v6().i64[1]
+           ^ s.port();
+    }
+  };
+
+  template<> struct hash<std::pair<net::Socket, net::Socket>>
+  {
+    typedef std::pair<net::Socket, net::Socket> argument_type;
+    typedef std::size_t result_type;
+    result_type operator()(argument_type const& s) const noexcept
+    {
+      return std::hash<net::Socket>{}(s.first)
+           ^ std::hash<net::Socket>{}(s.second);
+    }
+  };
+
+  template<>
+  struct hash<net::Quadruple> {
+  public:
+    size_t operator () (const net::Quadruple& key) const noexcept {
+      const auto h1 = std::hash<net::Socket>{}(key.src);
+      const auto h2 = std::hash<net::Socket>{}(key.dst);
+      return h1 ^ h2;
+    }
+  };
+} // < namespace std
 
 #endif //< NET_SOCKET_HPP

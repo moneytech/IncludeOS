@@ -1,30 +1,18 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #ifndef HTTP_VERSION_HPP
 #define HTTP_VERSION_HPP
 
-#include <sstream>
+#include <ostream>
+
+#ifdef __GNUC__
+#undef major
+#undef minor
+#endif //< __GNUC__
 
 namespace http {
 
 ///
-/// This class represents the version
-/// of an http message
+/// This class represents the version of an http message
 ///
 class Version {
 public:
@@ -39,27 +27,27 @@ public:
   ///
   /// Default destructor
   ///
-  ~Version() noexcept = default;
+  ~Version() noexcept =default;
 
   ///
   /// Default copy constructor
   ///
-  Version(const Version&) noexcept = default;
+  Version(const Version&) noexcept =default;
 
   ///
   /// Default move constructor
   ///
-  Version(Version&&) noexcept = default;
+  Version(Version&&) noexcept =default;
 
   ///
   /// Default assignment operator
   ///
-  Version& operator = (const Version&) noexcept = default;
+  Version& operator=(const Version&) noexcept =default;
 
   ///
   /// Default move assignment operator
   ///
-  Version& operator = (Version&&) noexcept = default;
+  Version& operator=(Version&&) noexcept =default;
 
   ///
   /// Get the major version number
@@ -101,7 +89,7 @@ public:
   /// Operator to transform this class
   /// into string form
   ///
-  operator std::string () const;
+  operator std::string() const;
 private:
   ///
   /// Class data members
@@ -115,39 +103,40 @@ private:
 ///
 /// Operator to check for equality
 ///
-bool operator == (const Version& lhs, const Version& rhs) noexcept;
+bool operator==(const Version& lhs, const Version& rhs) noexcept;
 
 ///
 /// Operator to check for inequality
 ///
-bool operator != (const Version& lhs, const Version& rhs) noexcept;
+bool operator!=(const Version& lhs, const Version& rhs) noexcept;
 
 ///
 /// Operator to check for less than relationship
 ///
-bool operator < (const Version& lhs, const Version& rhs) noexcept;
+bool operator<(const Version& lhs, const Version& rhs) noexcept;
 
 ///
 /// Operator to check for greater than relationship
 ///
-bool operator > (const Version& lhs, const Version& rhs) noexcept;
+bool operator>(const Version& lhs, const Version& rhs) noexcept;
 
 ///
 /// Operator to check for less than or equal to relationship
 ///
-bool operator <= (const Version& lhs, const Version& rhs) noexcept;
+bool operator<=(const Version& lhs, const Version& rhs) noexcept;
 
 ///
 /// Operator to check for greater than or equal to relationship
 ///
-bool operator >= (const Version& lhs, const Version& rhs) noexcept;
+bool operator>=(const Version& lhs, const Version& rhs) noexcept;
 
 /**--^----------- Helper Functions -----------^--**/
 
 /**--v----------- Implementation Details -----------v--**/
 
 ///////////////////////////////////////////////////////////////////////////////
-inline std::ostream& operator << (std::ostream& output_device, const Version& version) {
+template<typename Char, typename Char_traits>
+inline std::basic_ostream<Char, Char_traits>& operator<<(std::basic_ostream<Char, Char_traits>& output_device, const Version& version) {
   return output_device << version.to_string();
 }
 

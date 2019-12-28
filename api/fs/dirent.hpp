@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef FS_DIRENT_HPP
@@ -29,7 +13,9 @@ namespace fs {
   struct Dirent {
 
     /** Constructor */
-    explicit Dirent(File_system* fs, const Enttype t = INVALID_ENTITY, const std::string& n = "",
+    explicit Dirent(const File_system* fs,
+                    const Enttype t = INVALID_ENTITY,
+                    const std::string& n = "",
                     const uint64_t blk   = 0, const uint64_t pr    = 0,
                     const uint64_t sz    = 0, const uint32_t attr  = 0,
                     const uint32_t modt = 0)
@@ -38,44 +24,32 @@ namespace fs {
         size_{sz}, attrib_ {attr},
         modif {modt}
     {}
+    Dirent(const Dirent&) noexcept;
 
     Enttype type() const noexcept
-    { return ftype; }
+    { return this->ftype; }
 
     const std::string& name() const noexcept
-    { return fname_; }
+    { return this->fname_; }
 
     uint64_t block() const noexcept
-    { return block_; }
+    { return this->block_; }
 
     uint64_t parent() const noexcept
-    { return parent_; }
+    { return this->parent_; }
 
-    inline Device_id device_id() const noexcept;
+    inline int device_id() const noexcept;
 
     uint64_t size() const noexcept
-    { return size_; }
+    { return this->size_; }
 
     uint32_t attrib() const noexcept
-    { return attrib_; }
+    { return this->attrib_; }
 
     // good luck
     uint64_t modified() const
     {
-      /*
-        uint32_t oldshit = modif;
-        uint32_t day   = (oldshit & 0x1f);
-        uint32_t month = (oldshit >> 5) & 0x0f;
-        uint32_t year  = (oldshit >> 9) & 0x7f;
-        oldshit >>= 16;
-        uint32_t secs = (oldshit & 0x1f) * 2;
-        uint32_t mins = (oldshit >> 5) & 0x3f;
-        uint32_t hrs  = (oldshit >> 11) & 0x1f;
-        // invalid timestamp?
-        if (hrs > 23 or mins > 59 or secs > 59)
-        return 0;
-      */
-      return modif;
+      return this->modif;
     }
 
 
@@ -108,6 +82,9 @@ namespace fs {
       } //< switch (type)
     }
 
+    const File_system& fs() const noexcept
+    { return *fs_; }
+
     /** Read async **/
     inline void read(uint64_t pos, uint64_t n, on_read_func fn);
 
@@ -121,10 +98,10 @@ namespace fs {
     inline std::string read();
 
     /** List contents async **/
-    inline void ls(on_ls_func fn);
+    inline void ls(on_ls_func fn) const;
 
     /** List contents sync **/
-    inline List ls();
+    inline List ls() const;
 
     /** Get a dirent by path, relative to here - async **/
     template <typename P = std::initializer_list<std::string> >
@@ -134,10 +111,8 @@ namespace fs {
     template <typename P = std::initializer_list<std::string> >
     inline Dirent stat_sync(P path);
 
-
-
   private:
-    File_system* fs_;
+    const File_system* fs_;
     Enttype     ftype;
     std::string fname_;
     uint64_t    block_;
@@ -155,7 +130,7 @@ namespace fs {
 
 namespace fs {
 
-  Device_id Dirent::device_id() const noexcept
+  int Dirent::device_id() const noexcept
   { return fs_ ? fs_->device_id() : -1; }
 
   void Dirent::read(uint64_t pos, uint64_t n, on_read_func fn) {
@@ -179,12 +154,12 @@ namespace fs {
 
 
   /** List contents async **/
-  void Dirent::ls(on_ls_func fn) {
+  void Dirent::ls(on_ls_func fn) const {
     fs_->ls(*this, fn);
   }
 
   /** List contents sync **/
-  List Dirent::ls() {
+  List Dirent::ls() const {
     return fs_->ls(*this);
   }
 

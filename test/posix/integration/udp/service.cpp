@@ -1,28 +1,13 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <service>
 #include <cstdio>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <info>
 #include <cassert>
 #include <errno.h>
 #include <unistd.h>
-#include <net/inet4>
+#include <net/interfaces>
 
 const uint16_t PORT = 1042;
 const uint16_t OUT_PORT = 4242;
@@ -30,9 +15,10 @@ const uint16_t BUFSIZE = 2048;
 
 int main()
 {
-  auto&& inet = net::Inet4::ifconfig({  10,  0,  0, 50 },   // IP
-                                     { 255, 255, 0,  0 },   // Netmask
-                                     {  10,  0,  0,  3 });  // Gateway
+  auto&& inet = net::Interfaces::get(0);
+  inet.network_config({  10,  0,  0, 58 },   // IP
+                      { 255, 255, 0,  0 },   // Netmask
+                      {  10,  0,  0,  3 });  // Gateway
 
   INFO("UDP Socket", "bind(%u)", PORT);
 
@@ -96,10 +82,11 @@ int main()
   destaddr.sin_port = htons(OUT_PORT);
 
   const char *my_message = "Only hipsters uses POSIX";
-
   res = sendto(socket(AF_INET, SOCK_DGRAM, 0), my_message, strlen(my_message), 0, (struct sockaddr *)&destaddr, sizeof(destaddr));
   CHECKSERT(res > 0, "Message was sent from NEW socket to %s:%u (verified by script)",
     inet.gateway().to_string().c_str(), OUT_PORT);
+
+  INFO2("sendto() called");
 
 
   INFO("UDP Socket", "send() and connect()");
@@ -114,6 +101,7 @@ int main()
   res = send(fd_send_connect, my_message, strlen(my_message), 0);
   CHECKSERT(res > 0, "Send works when connected (verified by script)");
 
+  INFO2("sendto() called");
 
   INFO("UDP Socket", "reading from buffer with recv()");
   int i = 0;

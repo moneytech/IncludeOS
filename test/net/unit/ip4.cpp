@@ -1,24 +1,8 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <map>
 #include <common.cxx>
 #include <nic_mock.hpp>
-#include <net/inet4.hpp>
+#include <net/inet>
 
 int ip_packets_dropped = 0;
 int ip_packets_received = 0;
@@ -85,7 +69,6 @@ void ip_drop(net::Packet_ptr, net::IP4::Direction dir, net::IP4::Drop_reason rea
   }                                                     \
 
 
-
 int sections = 0;
 
 using namespace net;
@@ -99,7 +82,7 @@ CASE("IP4 is still a thing")
   SETUP("A pre-wired IP4 instance with custom upstream handlers"){
 
     Nic_mock nic;
-    Inet4 inet{nic};
+    Inet inet{nic};
 
     inet.ip_obj().set_drop_handler(ip_drop);
     inet.ip_obj().set_udp_handler(ip_rcv_udp);
@@ -194,6 +177,42 @@ CASE("IP4 is still a thing")
       EXPECT_DROP(std::move(ip_pckt), Direction::Upstream, Drop_reason::Bad_source);
 
       MYINFO("Section %i done", ++sections);
+    }
+
+    SECTION("IP packets with bad source address gets dropped") {
+
+      // Martian packet gets dropped
+      auto ip_pckt = inet.create_ip_packet(Protocol::UDP);
+      ip_pckt->set_ip_src({192,168,1,100});
+      ip_pckt->make_flight_ready();
+
+      // we're not allowed to transmit IP packets without payload
+      ip_pckt->set_ip_data_length(20);
+
+      {
+        auto dropcount = ip_packets_dropped;
+        inet.ip_obj().transmit(std::move(ip_pckt));
+        EXPECT(ip_packets_dropped == dropcount + 1);
+        EXPECT(last_drop_direction == IP4::Direction::Downstream);
+        EXPECT(last_drop_reason == IP4::Drop_reason::Bad_source);
+      }
+
+      MYINFO("Section %i done", ++sections);
+    }
+
+    SECTION("IP header flags are set correctly")
+    {
+      auto ip_pckt = inet.create_ip_packet(Protocol::TCP);
+      EXPECT(ip_pckt->ip_flags() == ip4::Flags::NONE);
+
+      ip_pckt->set_ip_flags(ip4::Flags::DF);
+      EXPECT(ip_pckt->ip_flags() == ip4::Flags::DF);
+
+      ip_pckt->set_ip_flags(ip4::Flags::MF);
+      EXPECT(ip_pckt->ip_flags() == ip4::Flags::MF);
+
+      ip_pckt->set_ip_flags(ip4::Flags::MFDF);
+      EXPECT(ip_pckt->ip_flags() == ip4::Flags::MFDF);
     }
 
 

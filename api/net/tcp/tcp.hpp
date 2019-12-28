@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_TCP_HPP
@@ -23,15 +7,19 @@
 #include "connection.hpp"
 #include "headers.hpp"
 #include "listener.hpp"
-#include "packet.hpp"
+#include "packet_view.hpp"
+#include "packet.hpp" // remove me, temp for NaCl
 
 #include <map>  // connections, listeners
-#include <queue>  // writeq
-#include <net/inet.hpp>
+#include <deque>  // writeq
 #include <net/socket.hpp>
-#include <bitset>
+#include <net/ip4/ip4.hpp>
+#include <util/bitops.hpp>
+#include <util/alloc_pmr.hpp>
 
 namespace net {
+
+  class Inet;
 
   struct TCP_error : public std::runtime_error {
     using runtime_error::runtime_error;
@@ -46,96 +34,16 @@ namespace net {
     using CleanupCallback = tcp::Connection::CleanupCallback;
     using ConnectCallback = tcp::Connection::ConnectCallback;
 
+    using Packet_reroute_func = delegate<void(net::Packet_ptr)>;
+
+    using Port_utils = std::map<net::Addr, Port_util>;
+
     friend class tcp::Connection;
     friend class tcp::Listener;
 
   private:
-    using Listeners       = std::map<Socket, std::unique_ptr<tcp::Listener>>;
-    using Connections     = std::map<tcp::Connection::Tuple, tcp::Connection_ptr>;
-
-    /**
-     * @brief      Class for port utility.
-     */
-    class Port_util {
-    public:
-      /**
-       * @brief      Construct a port util with a new generated ephemeral port
-       *             and a empty port list.
-       */
-      Port_util();
-
-      /**
-       * @brief      Gets the next ephemeral port.
-       *             increment_ephemeral may throw
-       *
-       * @return     The next ephemeral port.
-       */
-      uint16_t get_next_ephemeral()
-      {
-        increment_ephemeral();
-        return ephemeral_;
-      }
-
-      /**
-       * @brief      Bind a port, making it reserved.
-       *
-       * @param[in]  port  The port
-       */
-      void bind(const uint16_t port) noexcept
-      {
-        Expects(port < port_ranges::DYNAMIC_END);
-        ports.set(port);
-
-        if(port_ranges::is_dynamic(port)) ++eph_count;
-      }
-
-      /**
-       * @brief      Unbind a port, making it available.
-       *
-       * @param[in]  port  The port
-       */
-      void unbind(const uint16_t port) noexcept
-      {
-        Expects(port < port_ranges::DYNAMIC_END);
-        ports.reset(port);
-
-        if(port_ranges::is_dynamic(port)) --eph_count;
-      }
-
-      /**
-       * @brief      Determines if the port is bound.
-       *
-       * @param[in]  port  The port
-       *
-       * @return     True if bound, False otherwise.
-       */
-      bool is_bound(const uint16_t port) const noexcept
-      {
-        Expects(port < port_ranges::DYNAMIC_END);
-        return ports[port];
-      }
-
-      /**
-       * @brief      Determines if it has any free ephemeral ports.
-       *
-       * @return     True if has free ephemeral, False otherwise.
-       */
-      bool has_free_ephemeral() const noexcept
-      { return eph_count < (port_ranges::DYNAMIC_END - port_ranges::DYNAMIC_START); }
-
-    private:
-      std::bitset<65536> ports;
-      uint16_t           ephemeral_;
-      uint16_t           eph_count;
-
-      /**
-       * @brief      Increment the ephemeral port by one.
-       *             Throws if there are no more free ephemeral ports available.
-       */
-      void increment_ephemeral();
-
-    }; // < class Port_util
-    using Port_lists      = std::map<tcp::Address, Port_util>;
+    using Listeners       = std::map<Socket, std::shared_ptr<tcp::Listener>>;
+    using Connections     = std::unordered_map<tcp::Connection::Tuple, tcp::Connection_ptr>;
 
   public:
     /////// TCP Stuff - Relevant to the protocol /////
@@ -147,7 +55,7 @@ namespace net {
      *
      * @param      <unnamed>  The IPStack used by TCP
      */
-    TCP(IPStack&);
+    TCP(IPStack&, bool smp = false);
 
     /**
      * @brief      Bind to a port to start listening for new connections
@@ -158,8 +66,8 @@ namespace net {
      *
      * @return     A TCP Listener
      */
-    tcp::Listener& listen(const tcp::port_t port, ConnectCallback cb = nullptr)
-    { return listen({0, port}, std::move(cb)); }
+    tcp::Listener& listen(const tcp::port_t port, ConnectCallback cb = nullptr,
+                          const bool ipv6_only = false);
 
     /**
      * @brief      Bind to a socket to start listening for new connections
@@ -170,7 +78,7 @@ namespace net {
      *
      * @return     A TCP Listener
      */
-    tcp::Listener& listen(Socket socket, ConnectCallback cb = nullptr);
+    tcp::Listener& listen(const Socket& socket, ConnectCallback cb = nullptr);
 
     /**
      * @brief Close a Listener
@@ -180,7 +88,7 @@ namespace net {
      * @param socket listening socket
      * @return whether the listener existed and was closed
      */
-    bool close(Socket socket);
+    bool close(const Socket& socket);
 
     /**
      * @brief      Make an outgoing connection to a TCP remote (IP:port).
@@ -257,24 +165,27 @@ namespace net {
      *
      * @param[in]  <unnamed>  A network packet
      */
-    void receive(net::Packet_ptr);
+    void receive4(net::Packet_ptr);
+
+    /**
+     * @brief      Receive a Packet from the network layer (IP6)
+     *
+     * @param[in]  <unnamed>  A IP6 packet
+     */
+    void receive6(net::Packet_ptr);
+
+    void receive(tcp::Packet_view&);
 
     /**
      * @brief      Sets a delegate to the network output.
      *
      * @param[in]  del   A downstream delegate
      */
-    void set_network_out(downstream del)
-    { _network_layer_out = del; }
+    void set_network_out4(downstream del)
+    { network_layer_out4_ = del; }
 
-    /**
-     * @brief      Computes the TCP checksum of a segment
-     *
-     * @param[in]  <unnamed>  a TCP Segment
-     *
-     * @return     The checksum of the TCP segment
-     */
-    static uint16_t checksum(const tcp::Packet&);
+    void set_network_out6(downstream del)
+    { network_layer_out6_ = del; }
 
     /**
      * @brief      Returns a collection of the listeners for this instance.
@@ -397,6 +308,22 @@ namespace net {
     { return timestamps_; }
 
     /**
+     * @brief      Sets if SACK Option is gonna be used.
+     *
+     * @param[in]  active  Whether SACK Option are in use.
+     */
+    void set_SACK(bool active) noexcept
+    { sack_ = active; }
+
+    /**
+     * @brief      Whether the TCP instance is using SACK Options or not.
+     *
+     * @return     Whether the TCP instance is using SACK Options or not.
+     */
+    bool uses_SACK() const noexcept
+    { return sack_; }
+
+    /**
      * @brief      Sets the dack. [RFC 1122] (p.96)
      *
      * @param[in]  dack_timeout  The dack timeout
@@ -429,14 +356,59 @@ namespace net {
     { return max_syn_backlog_; }
 
     /**
+     * @brief      Set the maximum allowed memory
+     *             to be used by this TCP.
+     *
+     * @param[in]  size  The limit in bytes
+     */
+    void set_total_bufsize(const size_t size)
+    {
+      total_bufsize_ = size;
+      mempool_.set_total_capacity(total_bufsize_);
+    }
+
+    const os::mem::Pmr_pool& mempool() {
+      return mempool_;
+    }
+
+    /**
+     * @brief      Sets the minimum buffer size.
+     *
+     * @param[in]  size  The size
+     */
+    void set_min_bufsize(const size_t size)
+    {
+      Expects(util::bits::is_pow2(size));
+      Expects(size <= max_bufsize_);
+      min_bufsize_ = size;
+    }
+
+    /**
+     * @brief      Sets the maximum buffer size.
+     *
+     * @param[in]  size  The size
+     */
+    void set_max_bufsize(const size_t size)
+    {
+      Expects(util::bits::is_pow2(size));
+      Expects(size >= min_bufsize_);
+      max_bufsize_ = size;
+    }
+
+    auto min_bufsize() const
+    { return min_bufsize_; }
+
+    auto max_bufsize() const
+    { return max_bufsize_; }
+
+    /**
      * @brief      The Maximum Segment Size to be used for this instance.
      *             [RFC 793] [RFC 879] [RFC 6691]
      *             This is the MTU - IP_hdr - TCP_hdr
      *
      * @return     The MSS
      */
-    uint16_t MSS() const
-    { return network().MDDS() - sizeof(tcp::Header); }
+    uint16_t MSS(const Protocol) const;
 
     /**
      * @brief      Returns a string representation of the listeners and connections.
@@ -460,7 +432,7 @@ namespace net {
      *
      * @return     True if bound, False otherwise.
      */
-    bool is_bound(const Socket socket) const;
+    bool is_bound(const Socket& socket) const;
 
     /**
      * @brief      Number of connections queued for writing.
@@ -473,10 +445,9 @@ namespace net {
     /**
      * @brief      The IP address for which the TCP instance is "connected".
      *
-     * @return     An IP4 address
+     * @return     An IP address
      */
-    tcp::Address address() const noexcept
-    { return inet_.ip_addr(); }
+    tcp::Address address() const noexcept;
 
     /**
      * @brief      The stack object for which the TCP instance is "bound to"
@@ -487,10 +458,29 @@ namespace net {
     { return inet_; }
 
     /**
-     *  Is called when an Error has occurred in the OS
-     *  F.ex.: Is called when an ICMP error message has been received in response to a sent TCP packet
-    */
-    void error_report(Error& err, Socket dest);
+     *  Methods for handling Path MTU Discovery - RFC 1191
+     */
+
+    /**
+     * @brief      Is called when an Error has occurred in the OS
+     *             F.ex.: Is called when an ICMP error message has been received in response
+     *             to a sent TCP (or UDP) packet
+     *
+     * @param[in]  err   The error
+     * @param[in]  dest  The destination the original packet was sent to, that resulted in an error
+     */
+    void error_report(const Error& err, Socket dest);
+
+    /**
+     * @brief      Called by Inet (triggered by IP) when a Path MTU value has grown stale and the value
+     *             is reset (increased) to check if the PMTU for the path could have increased
+     *             This is NOT a change in the Path MTU in response to receiving an ICMP Too Big message
+     *             and no retransmission of packets should take place
+     *
+     * @param[in]  dest  The destination/path
+     * @param[in]  pmtu  The reset PMTU value
+     */
+    void reset_pmtu(Socket dest, IP4::PMTU pmtu);
 
     /**
      * Return the associated shared_ptr for a connection, if it exists
@@ -520,14 +510,29 @@ namespace net {
       throw std::out_of_range("Missing connection");
     }
 
+    void redirect(Packet_reroute_func func) {
+      this->packet_rerouter = func;
+    }
+
+    int get_cpuid() const noexcept {
+      return this->cpu_id;
+    }
+
   private:
     IPStack&      inet_;
     Listeners     listeners_;
     Connections   connections_;
 
-    Port_lists    ports_;
+    size_t total_bufsize_;
+    os::mem::Pmr_pool mempool_;
 
-    downstream  _network_layer_out;
+    size_t min_bufsize_;
+    size_t max_bufsize_;
+
+    Port_utils& ports_;
+
+    downstream  network_layer_out4_;
+    downstream  network_layer_out6_;
 
     /** Internal writeq - connections gets queued in the wait for packets and recvs offer */
     std::deque<tcp::Connection_ptr> writeq;
@@ -542,20 +547,26 @@ namespace net {
     uint8_t                   wscale_;
     /** Timestamp option active [RFC 7323] p. 11 */
     bool                      timestamps_;
+    /** Selective ACK  [RFC 2018] */
+    bool                      sack_;
     /** Delayed ACK timeout - how long should we wait with sending an ACK */
     std::chrono::milliseconds dack_timeout_;
     /** Maximum SYN queue backlog */
     uint16_t                  max_syn_backlog_;
 
     /** Stats */
-    uint64_t& bytes_rx_;
-    uint64_t& bytes_tx_;
-    uint64_t& packets_rx_;
-    uint64_t& packets_tx_;
-    uint64_t& incoming_connections_;
-    uint64_t& outgoing_connections_;
-    uint64_t& connection_attempts_;
-    uint32_t& packets_dropped_;
+    uint64_t* bytes_rx_ = nullptr;
+    uint64_t* bytes_tx_ = nullptr;
+    uint64_t* packets_rx_ = nullptr;
+    uint64_t* packets_tx_ = nullptr;
+    uint64_t* incoming_connections_ = nullptr;
+    uint64_t* outgoing_connections_ = nullptr;
+    uint64_t* connection_attempts_ = nullptr;
+    uint32_t* packets_dropped_ = nullptr;
+
+    bool smp_enabled = false;
+    int  cpu_id = 0;
+    Packet_reroute_func packet_rerouter = nullptr;
 
     /**
      * @brief      Transmit an outgoing TCP segment to the network.
@@ -563,14 +574,21 @@ namespace net {
      *
      * @param[in]  <unnamed>  A TCP Segment
      */
-    void transmit(tcp::Packet_ptr);
+    void transmit(tcp::Packet_view_ptr);
 
     /**
      * @brief      Creates an outgoing TCP packet.
      *
      * @return     A tcp packet ptr
      */
-    tcp::Packet_ptr create_outgoing_packet();
+    tcp::Packet_view_ptr create_outgoing_packet();
+
+    /**
+     * @brief      Creates an outgoing TCP6 packet.
+     *
+     * @return     A tcp packet ptr
+     */
+    tcp::Packet_view_ptr create_outgoing_packet6();
 
     /**
      * @brief      Sends a TCP reset based on the values of the incoming packet.
@@ -578,7 +596,7 @@ namespace net {
      *
      * @param[in]  incoming  The incoming tcp packet "to reset".
      */
-    void send_reset(const tcp::Packet& incoming);
+    void send_reset(const tcp::Packet_view& incoming);
 
     /**
      * @brief      Generate a unique initial sequence number (ISS).
@@ -599,15 +617,14 @@ namespace net {
      *
      * @return     An IP4 object
      */
-    IP4& network() const
-    { return inet_.ip_obj(); }
+    IP4& network() const;
 
     /**
      * @brief      Drops the TCP segment
      *
      * @param[in]  <unnamed>  A TCP Segment
      */
-    void drop(const tcp::Packet&);
+    void drop(const tcp::Packet_view&);
 
 
     // INTERNALS - Handling of collections
@@ -619,7 +636,7 @@ namespace net {
      *
      * @param[in]  socket  The socket
      */
-    void bind(const Socket socket);
+    void bind(const Socket& socket);
 
     /**
      * @brief      Unbinds a socket, making it free for future use
@@ -628,7 +645,7 @@ namespace net {
      *
      * @return     Returns wether there was a socket that got unbound
      */
-    bool unbind(const Socket socket);
+    bool unbind(const Socket& socket);
 
     /**
      * @brief      Bind to an socket where the address is given and the
@@ -639,16 +656,7 @@ namespace net {
      *
      * @return     The socket that got bound.
      */
-    Socket bind(const tcp::Address addr);
-
-    /**
-     * @brief      Binds to an socket where the address is given by the
-     *             stack and port is ephemeral. See bind(addr)
-     *
-     * @return     The socket that got bound.
-     */
-    Socket bind()
-    { return bind(address()); }
+    Socket bind(const tcp::Address& addr);
 
     /**
      * @brief      Determines if the source address is valid.
@@ -657,8 +665,7 @@ namespace net {
      *
      * @return     True if valid source, False otherwise.
      */
-    bool is_valid_source(const tcp::Address addr) const noexcept
-    { return addr == address() or addr == 0; /* temp */ }
+    bool is_valid_source(const tcp::Address& addr) const noexcept;
 
     /**
      * @brief      Try to find the listener bound to socket.
@@ -668,13 +675,7 @@ namespace net {
      *
      * @return     A listener iterator
      */
-    Listeners::iterator find_listener(const Socket socket)
-    {
-      Listeners::iterator it = listeners_.find(socket);
-      if(it == listeners_.end() and socket.address() != 0)
-        it = listeners_.find({0, socket.port()});
-      return it;
-    }
+    Listeners::iterator find_listener(const Socket& socket);
 
     /**
      * @brief      Try to find the listener bound to socket.
@@ -684,20 +685,16 @@ namespace net {
      *
      * @return     A listener const iterator
      */
-    Listeners::const_iterator cfind_listener(const Socket socket) const
-    {
-      Listeners::const_iterator it = listeners_.find(socket);
-      if(it == listeners_.cend() and socket.address() != 0)
-        it = listeners_.find({0, socket.port()});
-      return it;
-    }
+    Listeners::const_iterator cfind_listener(const Socket& socket) const;
 
     /**
      * @brief      Adds a connection.
      *
      * @param[in]  <unnamed>  A ptr to the Connection
+     *
+     * @return     True if the connection was added, false if rejected
      */
-    void add_connection(tcp::Connection_ptr);
+    bool add_connection(tcp::Connection_ptr);
 
     /**
      * @brief      Creates a connection.
@@ -717,7 +714,7 @@ namespace net {
      *
      * @param[in]  conn  A ptr to a Connection
      */
-    void close_connection(tcp::Connection_ptr conn)
+    void close_connection(const tcp::Connection* conn)
     {
       unbind(conn->local());
       connections_.erase(conn->tuple());
@@ -728,12 +725,7 @@ namespace net {
      *
      * @param[in]  listener  A Listener
      */
-    void close_listener(tcp::Listener& listener)
-    {
-      const auto socket = listener.local();
-      unbind(socket);
-      listeners_.erase(socket);
-    }
+    void close_listener(tcp::Listener& listener);
 
 
     // WRITEQ HANDLING
@@ -744,6 +736,7 @@ namespace net {
      * @param[in]  packets  Number of disposable packets
      */
     void process_writeq(size_t packets);
+    void smp_process_writeq(size_t packets);
 
     /**
      * @brief      Request an offer of packets.
@@ -759,13 +752,12 @@ namespace net {
      *
      * @param[in]  <unnamed>  A ptr to a Connection
      */
-    void queue_offer(tcp::Connection_ptr);
+    void queue_offer(tcp::Connection&);
 
     /**
      * @brief      Force the TCP to process the it's queue with the current amount of available packets.
      */
-    void kick()
-    { process_writeq(inet_.transmit_queue_available()); }
+    void kick();
 
   }; // < class TCP
 

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef HTTP_RESPONSE_WRITER_HPP
@@ -41,7 +25,6 @@ namespace http {
    */
   class Response_writer {
   public:
-    using TCP_conn  = net::tcp::Connection_ptr;
     using buffer_t  = net::tcp::buffer_t;
 
   public:
@@ -68,11 +51,7 @@ namespace http {
      *
      * @param[in]  chunk  a chunk of shared data
      */
-    void write(Chunk chunk);
-
-    // overload for chunk
-    void write(buffer_t buf, size_t len)
-    { write(Chunk{buf, len}); }
+    void write(net::tcp::buffer_t buffer);
 
     /**
      * @brief      Writes the status line + header to the underlying connection

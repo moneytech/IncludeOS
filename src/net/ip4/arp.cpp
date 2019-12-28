@@ -1,26 +1,14 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-#define DEBUG  // Allow debugging
-#define DEBUG2 // Allow debugging
+//#define ARP_DEBUG 1
+#ifdef ARP_DEBUG
+#define PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+#define PRINT(fmt, ...) /* fmt */
+#endif
 
 #include <vector>
 
-#include <net/inet4.hpp>
+#include <net/inet>
 #include <net/ip4/arp.hpp>
 #include <net/ip4/packet_arp.hpp>
 #include <statman>
@@ -40,7 +28,7 @@ namespace net {
   {}
 
   void Arp::receive(Packet_ptr pckt) {
-    debug("<ARP handler> got %i bytes of data\n", pckt->size());
+    PRINT("<ARP handler> got %i bytes of data\n", pckt->size());
 
     header* hdr = reinterpret_cast<header*>(pckt->layer_begin());
 
@@ -50,8 +38,8 @@ namespace net {
     /// always try to ship waiting packets when someone talks
     auto waiting = waiting_packets_.find(hdr->sipaddr);
     if (waiting != waiting_packets_.end()) {
-      debug("<Arp> Had a packet waiting for this IP. Sending\n");
-      transmit(std::move(waiting->second), hdr->sipaddr);
+      PRINT("<Arp> Had a packet waiting for this IP. Sending\n");
+      transmit(std::move(waiting->second.pckt), hdr->sipaddr);
       waiting_packets_.erase(waiting);
     }
 
@@ -60,7 +48,7 @@ namespace net {
       // Stat increment requests received
       requests_rx_++;
 
-      debug("<Arp> %s is looking for %s\n",
+      PRINT("<Arp> %s is looking for %s\n",
              hdr->sipaddr.str().c_str(),
              hdr->dipaddr.str().c_str());
 
@@ -77,7 +65,7 @@ namespace net {
       } else {
 
         // Drop
-        debug2("\t NO MATCH for My IP (%s). DROP!\n",
+        PRINT("\t NO MATCH for My IP (%s). DROP!\n",
                inet_.ip_addr().str().c_str());
       }
       break;
@@ -85,35 +73,35 @@ namespace net {
     case H_reply: {
       // Stat increment replies received
       replies_rx_++;
-      debug("\t ARP REPLY: %s belongs to %s (waiting: %u)\n",
+      PRINT("\t ARP REPLY: %s belongs to %s (waiting: %zu)\n",
              hdr->sipaddr.str().c_str(), hdr->shwaddr.str().c_str(), waiting_packets_.size());
       break;
     }
     default:
-      debug2("\t UNKNOWN OPCODE\n");
+      PRINT("\t UNKNOWN OPCODE\n");
       break;
     } //< switch(hdr->opcode)
 
   }
 
-  void Arp::cache(IP4::addr ip, MAC::Addr mac) {
-    debug("<Arp> Caching IP %s for %s\n", ip.str().c_str(), mac.str().c_str());
+  void Arp::cache(ip4::Addr ip, MAC::Addr mac) {
+    PRINT("<Arp> Caching IP %s for %s\n", ip.str().c_str(), mac.str().c_str());
 
     auto entry = cache_.find(ip);
 
     if (entry != cache_.end()) {
-      debug2("Cached entry found: %s recorded @ %llu. Updating timestamp\n",
+      PRINT("Cached entry found: %s recorded @ %zu. Updating timestamp\n",
              entry->second.mac().str().c_str(), entry->second.timestamp());
 
       if (entry->second.mac() != mac) {
         cache_.erase(entry);
-        cache_[ip] = mac;
+        cache_.emplace(ip, mac);
       } else {
         entry->second.update();
       }
 
     } else {
-      cache_[ip] = mac; // Insert
+      cache_.emplace(ip, mac); // Insert
       if (UNLIKELY(not flush_timer_.is_running())) {
         flush_timer_.start(flush_interval_);
       }
@@ -121,8 +109,8 @@ namespace net {
   }
 
 
-  void Arp::arp_respond(header* hdr_in, IP4::addr ack_ip) {
-    debug2("\t IP Match. Constructing ARP Reply\n");
+  void Arp::arp_respond(header* hdr_in, ip4::Addr ack_ip) {
+    PRINT("\t IP Match. Constructing ARP Reply\n");
 
     // Stat increment replies sent
     replies_tx_++;
@@ -134,21 +122,21 @@ namespace net {
     res->set_dest_mac(hdr_in->shwaddr);
     res->set_opcode(H_reply);
 
-    debug("\t IP: %s is at My Mac: %s\n",
+    PRINT("\t IP: %s is at My Mac: %s\n",
            res->source_ip().str().c_str(), res->source_mac().str().c_str());
 
     MAC::Addr dest = hdr_in->shwaddr;
-    debug("<ARP -> physical> Sending response to %s. Linklayer begin: buf + %i \n",
+    PRINT("<ARP -> physical> Sending response to %s. Linklayer begin: buf + %li \n",
           dest.str().c_str(), res->layer_begin() - res->buf() );
 
     linklayer_out_(std::move(res), dest, Ethertype::ARP);
   }
 
-  void Arp::transmit(Packet_ptr pckt, IP4::addr next_hop) {
+  void Arp::transmit(Packet_ptr pckt, ip4::Addr next_hop) {
 
     Expects(pckt->size());
 
-    debug2("<ARP -> physical> Transmitting %u bytes to %s\n",
+    PRINT("<ARP -> physical> Transmitting %u bytes to %s\n",
           (uint32_t) pckt->size(), next_hop.str().c_str());
 
     MAC::Addr dest_mac;
@@ -164,7 +152,7 @@ namespace net {
       // If we don't have a cached IP, perform address resolution
       auto cache_entry = cache_.find(next_hop);
       if (UNLIKELY(cache_entry == cache_.end())) {
-        debug("<ARP> No cache entry for IP %s.  Resolving. \n", next_hop.to_string().c_str());
+        PRINT("<ARP> No cache entry for IP %s.  Resolving. \n", next_hop.to_string().c_str());
         await_resolution(std::move(pckt), next_hop);
         return;
       }
@@ -173,7 +161,7 @@ namespace net {
       dest_mac = cache_[next_hop].mac();
 #endif
 
-      debug("<ARP> Found cache entry for IP %s -> %s \n",
+      PRINT("<ARP> Found cache entry for IP %s -> %s \n",
             next_hop.to_string().c_str(), dest_mac.to_string().c_str());
     }
 
@@ -185,32 +173,32 @@ namespace net {
   void Arp::resolve_waiting()
   {
 
-    debug("<Arp> resolve timer doing sweep\n");
+    PRINT("<Arp> resolve timer doing sweep\n");
 
-    if (waiting_packets_.empty()) {
-      debug("<Arp> Noting to do - stopping resolve timer\n");
-      resolve_timer_.stop();
-      return;
+    for (auto it =waiting_packets_.begin(); it != waiting_packets_.end();){
+      if (it->second.tries_remaining--) {
+        arp_resolver_(it->first);
+        it++;
+      } else {
+        it = waiting_packets_.erase(it);
+      }
     }
 
-    for (auto& packet_it : waiting_packets_) {
-      arp_resolver_(packet_it.first);
-    }
-
-    resolve_timer_.start(1s);
+    if (not waiting_packets_.empty())
+      resolve_timer_.start(1s);
 
   }
 
 
-  void Arp::await_resolution(Packet_ptr pckt, IP4::addr next_hop) {
+  void Arp::await_resolution(Packet_ptr pckt, ip4::Addr next_hop) {
     auto queue =  waiting_packets_.find(next_hop);
-    debug("<ARP await> Waiting for resolution of %s\n", next_hop.str().c_str());
+    PRINT("<ARP await> Waiting for resolution of %s\n", next_hop.str().c_str());
     if (queue != waiting_packets_.end()) {
-      debug("\t * Packets already queueing for this IP\n");
-      queue->second->chain(std::move(pckt));
+      PRINT("\t * Packets already queueing for this IP\n");
+      queue->second.pckt->chain(std::move(pckt));
     } else {
-      debug("\t *This is the first packet going to that IP\n");
-      waiting_packets_.emplace(std::make_pair(next_hop, std::move(pckt)));
+      PRINT("\t *This is the first packet going to that IP\n");
+      waiting_packets_.emplace(std::make_pair(next_hop, Queue_entry{std::move(pckt)}));
 
       // Try resolution immediately
       arp_resolver_(next_hop);
@@ -220,8 +208,8 @@ namespace net {
     }
   }
 
-  void Arp::arp_resolve(IP4::addr next_hop) {
-    debug("<ARP RESOLVE> %s\n", next_hop.str().c_str());
+  void Arp::arp_resolve(ip4::Addr next_hop) {
+    PRINT("<ARP RESOLVE> %s\n", next_hop.str().c_str());
 
     auto req = static_unique_ptr_cast<PacketArp>(inet_.create_packet());
     req->init(mac_, inet_.ip_addr(), next_hop);
@@ -238,8 +226,8 @@ namespace net {
 
   void Arp::flush_expired()
   {
-    debug("<ARP> Flushing expired entries\n");
-    std::vector<IP4::addr> expired;
+    PRINT("<ARP> Flushing expired entries\n");
+    std::vector<ip4::Addr> expired;
     for (auto ent : cache_) {
       if (ent.second.expired()) {
         expired.push_back(ent.first);

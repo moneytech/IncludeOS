@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef VIRTIO_BLOCK_HPP
@@ -49,21 +33,16 @@ public:
     return SECTOR_SIZE; // some multiple of sector size
   }
 
-  // read @blk from disk, call func with buffer when done
-  void read(block_t blk, on_read_func func) override;
+  block_t size() const noexcept override {
+    return config.capacity;
+  }
+
   // read @blk + @cnt from disk, call func with buffer when done
   void read(block_t blk, size_t cnt, on_read_func cb) override;
 
   // unsupported sync reads
-  buffer_t read_sync(block_t) override {
-    return buffer_t();
-  }
   buffer_t read_sync(block_t, size_t) override {
     return buffer_t();
-  }
-
-  block_t size() const noexcept override {
-    return config.capacity;
   }
 
   void deactivate() override;
@@ -102,10 +81,11 @@ private:
   {
     uint8_t      sector[512];
   };
+  typedef delegate<void(uint8_t*)> request_handler_t;
   struct blk_resp_t
   {
-    uint8_t      status;
-    on_read_func handler;
+    uint8_t           status;
+    request_handler_t handler;
   };
 
   struct request_t
@@ -114,7 +94,7 @@ private:
     blk_io_t      io;
     blk_resp_t    resp;
 
-    request_t(uint64_t blk, on_read_func cb);
+    request_t(uint64_t blk, request_handler_t cb);
   };
 
   /** Get virtio PCI config. @see Virtio::get_config.*/

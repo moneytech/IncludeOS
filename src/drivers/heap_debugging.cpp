@@ -1,25 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 //#define DEBUG // Enable debugging
 //#define DEBUG2
 
 #include <kernel/elf.hpp>
-#include <util/fixedvec.hpp>
+#include <util/fixed_vector.hpp>
 #include <common>
 #include <cassert>
 #include <cstdlib>
@@ -55,8 +39,8 @@ struct allocation
 static int enable_debugging = 1;
 static int enable_debugging_verbose = 0;
 static int enable_buffer_protection = 1;
-static fixedvector<allocation,  65536> allocs;
-static fixedvector<allocation*, 65536> free_allocs;
+static Fixed_vector<allocation,  65536> allocs;
+static Fixed_vector<allocation*, 65536> free_allocs;
 
 // There is a chance of a buffer overrun where this exact value
 // is written, but the chance of that happening is minimal
@@ -99,7 +83,7 @@ static allocation* find_alloc(char* addr)
   return nullptr;
 }
 
-void* operator new (std::size_t len) throw(std::bad_alloc)
+void* operator new (std::size_t len)
 {
   void* data = nullptr;
 
@@ -135,7 +119,7 @@ void* operator new (std::size_t len) throw(std::bad_alloc)
 
   if (enable_debugging) {
     if (!free_allocs.empty()) {
-      auto* x = free_allocs.pop();
+      auto* x = free_allocs.pop_back();
       new(x) allocation((char*) data, len,
                         __builtin_return_address(0),
                         __builtin_return_address(1),
@@ -143,7 +127,7 @@ void* operator new (std::size_t len) throw(std::bad_alloc)
     } else if (!allocs.free_capacity()) {
       DPRINTF("[WARNING] Internal fixed vectors are FULL, expect bogus double free messages\n");
     } else {
-      allocs.emplace((char*) data, len,
+      allocs.emplace_back((char*) data, len,
                       __builtin_return_address(0),
                       __builtin_return_address(1),
                       __builtin_return_address(2));
@@ -159,7 +143,7 @@ void* operator new (std::size_t len) throw(std::bad_alloc)
     return data;
   }
 }
-void* operator new[] (std::size_t n) throw(std::bad_alloc)
+void* operator new[] (std::size_t n)
 {
   return ::operator new (n);
 }
@@ -218,7 +202,7 @@ inline static void deleted_ptr(void* ptr)
       // perfect match
       x->addr = nullptr;
       x->len  = 0;
-      free_allocs.add(x);
+      free_allocs.push_back(x);
     }
     else if (x->addr != ptr) {
       DPRINTF("[ERROR] Free on misaligned address: %p inside %p:%llu",

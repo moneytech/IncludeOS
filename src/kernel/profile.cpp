@@ -1,32 +1,14 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <profile>
 #include <common>
-#include "../platform/x86_pc/pit.hpp"
+#include <kernel.hpp>
 #include <kernel/cpuid.hpp>
 #include <kernel/elf.hpp>
-#include <kernel/irq_manager.hpp>
-#include <kernel/os.hpp>
-#include <util/fixedvec.hpp>
+#include <os.hpp>
+#include <util/fixed_vector.hpp>
 #include <unordered_map>
 #include <cassert>
 #include <algorithm>
-#include <sstream>
 
 #define BUFFER_COUNT    1024
 
@@ -40,13 +22,13 @@ extern char _irq_cb_return_location;
 typedef uint32_t func_sample;
 struct Sampler
 {
-  fixedvector<uintptr_t, BUFFER_COUNT>* samplerq;
-  fixedvector<uintptr_t, BUFFER_COUNT>* transferq;
+  Fixed_vector<uintptr_t, BUFFER_COUNT>* samplerq;
+  Fixed_vector<uintptr_t, BUFFER_COUNT>* transferq;
   std::unordered_map<uintptr_t, func_sample> dict;
   uint64_t total  = 0;
   uint64_t asleep = 0;
-  int  lockless;
-  bool discard; // discard results as long as true
+  int  lockless = 0;
+  bool discard = false; // discard results as long as true
   StackSampler::mode_t mode = StackSampler::MODE_CURRENT;
 
   Sampler() {
@@ -54,29 +36,27 @@ struct Sampler
     #define blargh(T) std::remove_pointer<decltype(T)>::type;
     samplerq = new blargh(samplerq);
     transferq = new blargh(transferq);
-    total    = 0;
-    asleep   = 0;
-    lockless = 0;
-    discard  = false;
   }
 
   void begin() {
     // gather samples repeatedly over single period
-    x86::PIT::forever(gather_stack_sampling);
+    __arch_preempt_forever(gather_stack_sampling);
+    // install interrupt handler (NOTE: after "initializing" PIT)
+    __arch_install_irq(0, parasite_interrupt_handler);
   }
-  void add(void* current, void* ra)
+  void add(void* current)
   {
     // need free space to take more samples
     if (samplerq->free_capacity()) {
       if (mode == StackSampler::MODE_CURRENT)
-          samplerq->add((uintptr_t) current);
-      else
-          samplerq->add((uintptr_t) ra);
+          samplerq->push_back((uintptr_t) current);
+      else if (mode == StackSampler::MODE_CALLER)
+          samplerq->push_back((uintptr_t) __builtin_return_address(2));
     }
     // return when its not our turn
     if (lockless) return;
 
-    // transfer all the built up samplings
+    // transfer all the built up samples
     transferq->copy(samplerq->begin(), samplerq->size());
     samplerq->clear();
     lockless = 1;
@@ -90,8 +70,6 @@ static Sampler& get() {
 
 void StackSampler::begin()
 {
-  // install interrupt handler
-  IRQ_manager::get().set_irq_handler(0, parasite_interrupt_handler);
   // start taking samples using PIT interrupts
   get().begin();
 }
@@ -100,21 +78,23 @@ void StackSampler::set_mode(mode_t md)
   get().mode = md;
 }
 
-void profiler_stack_sampler(void* esp)
+void profiler_stack_sampler(void* sample)
 {
-  void* current = esp; //__builtin_return_address(1);
-  // maybe qemu, maybe some bullshit we don't care about
-  if (UNLIKELY(current == nullptr || get().discard)) return;
-  // ignore event loop (and take sleep statistic)
-  if (current == &_irq_cb_return_location) {
-    ++get().asleep;
+  auto& system = get();
+  if (UNLIKELY(sample == nullptr)) return;
+  // gather sample statistics
+  system.total++;
+  if (sample == &_irq_cb_return_location) {
+    system.asleep++;
     return;
   }
+  // if discard enabled, ignore samples
+  if (UNLIKELY(system.discard)) return;
   // add address to sampler queue
-  get().add(current, __builtin_return_address(1));
+  system.add(sample);
 }
 
-static void gather_stack_sampling()
+void gather_stack_sampling()
 {
   // gather results on our turn only
   if (get().lockless == 1)
@@ -136,18 +116,15 @@ static void gather_stack_sampling()
             std::forward_as_tuple(1));
       }
     }
-    // increase total and switch back transferring of samples
-    get().total += get().transferq->size();
+    // switch back transferring of samples
     get().lockless = 0;
   }
 }
 
-uint64_t StackSampler::samples_total()
-{
+uint64_t StackSampler::samples_total() noexcept {
   return get().total;
 }
-uint64_t StackSampler::samples_asleep()
-{
+uint64_t StackSampler::samples_asleep() noexcept {
   return get().asleep;
 }
 
@@ -176,7 +153,7 @@ std::vector<Sample> StackSampler::results(int N)
       res.push_back(Sample {sa.second, (void*) func.addr, func.name});
     }
     else {
-      int len = snprintf(buffer, sizeof(buffer), "0x%08x", func.addr);
+      int len = snprintf(buffer, sizeof(buffer), "0x%08zx", func.addr);
       res.push_back(Sample {sa.second, (void*) func.addr, std::string(buffer, len)});
     }
 
@@ -190,14 +167,14 @@ void StackSampler::print(const int N)
   auto samp = results(N);
   int total = samples_total();
 
-  printf("Stack sampling - %d results (%u samples)\n",
+  printf("Stack sampling - %zu results (%d samples)\n",
          samp.size(), total);
   for (auto& sa : samp)
   {
     // percentage of total samples
     float perc = sa.samp / (float)total * 100.0f;
     printf("%5.2f%%  %*u: %.*s\n",
-           perc, 8, sa.samp, sa.name.size(), sa.name.c_str());
+           perc, 8, sa.samp, (int) sa.name.size(), sa.name.c_str());
   }
 }
 
@@ -206,162 +183,24 @@ void StackSampler::set_mask(bool mask)
   get().discard = mask;
 }
 
-decltype(ScopedProfiler::guard)   ScopedProfiler::guard   = Guard::NOT_SELECTED;
-decltype(ScopedProfiler::entries) ScopedProfiler::entries = {};
-
-void ScopedProfiler::record()
+std::string HeapDiag::to_string()
 {
-  // Select which guard to use (this is only done once)
-  if (UNLIKELY(guard == Guard::NOT_SELECTED))
-  {
-    if (CPUID::is_intel_cpu() && CPUID::has_feature(CPUID::Feature::SSE2))
-    {
-      debug2("ScopedProfiler selected guard LFENCE\n");
-      guard = Guard::LFENCE;
-    }
-    else if (CPUID::is_amd_cpu() && CPUID::has_feature(CPUID::Feature::SSE2))
-    {
-      debug2("ScopedProfiler selected guard MFENCE\n");
-      guard = Guard::MFENCE;
-    }
-    else
-    {
-      printf("[WARNING] ScopedProfiler only works with an Intel or AMD CPU that supports SSE2!\n");
-      guard = Guard::NOT_AVAILABLE;
-    }
-  }
+  static intptr_t last = 0;
+  // show information on heap status, to discover leaks etc.
+  auto heap_begin = kernel::heap_begin();
+  auto heap_end   = kernel::heap_end();
+  auto heap_usage = kernel::heap_usage();
+  intptr_t heap_size = heap_end - heap_begin;
+  last = heap_size - last;
 
-  if (UNLIKELY(guard == Guard::NOT_AVAILABLE))
-  {
-    return;  // No guard available -> just bail out
-  }
-  else if (guard == Guard::LFENCE)
-  {
-    asm volatile ("lfence\n\t"
-                  "rdtsc\n\t"
-                  : "=A" (tick_start));
-  }
-  else if (guard == Guard::MFENCE)
-  {
-    asm volatile ("mfence\n\t"
-                  "rdtsc\n\t"
-                  : "=A" (tick_start));
-  }
-}
-
-ScopedProfiler::~ScopedProfiler()
-{
-  uint64_t tick = 0;
-
-  if (guard == Guard::NOT_AVAILABLE)
-  {
-    return;  // No guard available -> just bail out
-  }
-  else if (guard == Guard::LFENCE)
-  {
-    asm volatile ("lfence\n\t"
-                  "rdtsc\n\t"
-                  : "=A" (tick));
-  }
-  else if (guard == Guard::MFENCE)
-  {
-    asm volatile ("mfence\n\t"
-                  "rdtsc\n\t"
-                  : "=A" (tick));
-  }
-
-  auto cycles = tick - tick_start;
-  auto function_address = __builtin_return_address(0);
-
-  // Find an entry that matches this function_address, or an unused entry
-  for (auto& entry : entries)
-  {
-    if (entry.function_address == function_address)
-    {
-      // Update the entry
-      entry.cycles_average = ((entry.cycles_average * entry.num_samples) + cycles) / (entry.num_samples + 1);
-      entry.num_samples += 1;
-
-      return;
-    }
-    else if (entry.function_address == 0)
-    {
-      // Use this unused entry
-      char symbol_buffer[1024];
-      const auto symbols = Elf::safe_resolve_symbol(function_address,
-                                                    symbol_buffer,
-                                                    sizeof(symbol_buffer));
-      entry.name = this->name;
-      entry.function_address = function_address;
-      entry.function_name = symbols.name;
-      entry.cycles_average = cycles;
-      entry.num_samples = 1;
-      return;
-    }
-  }
-
-  // We didn't find neither an entry for the function nor an unused entry
-  // Warn that the array is too small for the current number of ScopedProfilers
-  printf("[WARNING] There are too many ScopedProfilers in use\n");
-}
-
-std::string ScopedProfiler::get_statistics()
-{
-  std::ostringstream ss;
-
-  // Add header
-  ss << " CPU time (average) | Samples | Function Name \n";
-  ss << "--------------------------------------------------------------------------------\n";
-
-  // Calculate the number of used entries
-  auto num_entries = 0u;
-  for (auto i = 0u; i < entries.size(); i++)
-  {
-    if (entries[i].function_address == 0)
-    {
-      num_entries = i;
-      break;
-    }
-  }
-
-  if (num_entries > 0)
-  {
-    // Sort on cycles_average (higher value first)
-    // Make sure to keep unused entries last (only sort used entries)
-    std::sort(entries.begin(), entries.begin() + num_entries, [](const Entry& a, const Entry& b)
-    {
-      return a.cycles_average > b.cycles_average;
-    });
-
-    // Add each entry
-    ss.setf(std::ios_base::fixed);
-    for (auto i = 0u; i < num_entries; i++)
-    {
-      const auto& entry = entries[i];
-      double  div  = OS::cpu_freq().count() * 1000.0;
-
-      ss.width(16);
-      ss << entry.cycles_average / div << " ms | ";
-
-      ss.width(7);
-      ss << entry.num_samples << " | ";
-
-      ss.width(0);
-      ss << entry.function_name;
-      // optional name
-      if (entry.name)
-        ss << " (" << entry.name << ")";
-
-      ss << "\n";
-    }
-  }
-  else
-  {
-    ss << " <No entries> \n";
-  }
-
-  // Add footer
-  ss << "--------------------------------------------------------------------------------\n";
-
-  return ss.str();
+  char buffer[256];
+  int len = snprintf(buffer, sizeof(buffer),
+          "Heap begin  %#lx  size %lu Kb\n"
+          "Heap end    %#lx  diff %lu (%ld Kb)\n"
+          "Heap usage  %lu kB\n",
+          heap_begin, heap_size / 1024,
+          heap_end,  last, last / 1024,
+          heap_usage / 1024);
+  last = (int32_t) heap_size;
+  return std::string(buffer, len);
 }

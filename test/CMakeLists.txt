@@ -1,6 +1,50 @@
-cmake_minimum_required(VERSION 2.8.9)
+cmake_minimum_required(VERSION 3.1.0)
+
 project(unittests C CXX)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if (NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE "Debug")
+endif()
+
+set(PLATFORM "userspace")
+
+if (EXISTS ${CMAKE_CURRENT_BINARY_DIR}/conanbuildinfo.cmake)
+  include(${CMAKE_CURRENT_BINARY_DIR}/conanbuildinfo.cmake)
+  conan_basic_setup()
+else()
+  #TODO get a released version ? or put one into root/cmake/ ?
+  if(NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
+     message(STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan")
+     file(DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/master/conan.cmake"
+                    "${CMAKE_BINARY_DIR}/conan.cmake")
+  endif()
+  ##needed by conaningans
+
+  include(${CMAKE_BINARY_DIR}/conan.cmake)
+  #include conan cmake
+  if (UPDATE)
+   set(CONAN_UPDATE UPDATE)
+  endif()
+  if (CONAN_PROFILE)
+    set(CONANPROFILE PROFILED ${CONAN_PROFILE})
+  endif()
+  conan_cmake_run(
+    CONANFILE conanfile.txt
+    BASIC_SETUP
+    ${CONAN_UPDATE}
+    ${CONANPROFILE}
+  )
+endif()
+
+if (NOT ARCH)
+  if (CONAN_SETTINGS_ARCH)
+    set(ARCH ${CONAN_SETTINGS_ARCH})
+  else()
+    set(ARCH "x86_64")
+  endif()
+endif()
+message(STATUS "Building for arch ${ARCH}")
 
 option(COVERAGE "Build with coverage generation" OFF)
 option(SILENT_BUILD "Build with some warnings turned off" ON)
@@ -10,16 +54,21 @@ option(DEBUG_INFO "Print debug macro output when DEBUG/DEBUG2 etc. is defined in
 option(GENERATE_SUPPORT_FILES "Generate external files required by some tests (e.g. tar)" ON)
 option(EXTRA_TESTS "Build extra test" OFF)
 
-if ("${ARCH}" STREQUAL "")
-  message(STATUS "CMake detected host arch: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
-  set (ARCH ${CMAKE_HOST_SYSTEM_PROCESSOR})
-endif("${ARCH}" STREQUAL "")
-message(STATUS "Building for arch ${ARCH}")
+#if ("${ARCH}" STREQUAL "")
+#  message(STATUS "CMake detected host arch: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
+#  set (ARCH ${CMAKE_HOST_SYSTEM_PROCESSOR})
+#endif("${ARCH}" STREQUAL "")
 
 add_definitions(-DARCH_${ARCH})
 add_definitions(-DARCH="${ARCH}")
+add_definitions(-DPLATFORM_UNITTEST)
 
-set(CMAKE_CXX_STANDARD 14)
+FILE(WRITE ${CMAKE_BINARY_DIR}/version.h
+  "#define OS_VERSION \"v0.0.0.1\"\n"
+)
+
+include_directories(${CMAKE_BINARY_DIR})
+
 set(CMAKE_C_FLAGS "-g -O0 -std=c11 -Wall -Wextra")
 
 set(NO_INFO "-DNO_INFO=1")
@@ -32,48 +81,82 @@ if (DEBUG_INFO)
   set(NO_DEBUG "")
 endif()
 
-set(CMAKE_CXX_FLAGS "-g -O0 -std=c++14 -Wall -Wextra -Wno-unused-function -D__id_t_defined -DUNITTESTS -DURI_THROW_ON_ERROR ${NO_INFO} ${NO_DEBUG} -DGSL_THROW_ON_CONTRACT_VIOLATION -Dlest_FEATURE_AUTO_REGISTER=1 -DHAVE_LEST_MAIN")
+set(CMAKE_CXX_FLAGS "-g -O0 -march=native -std=c++17 -Wall -Wextra -Wno-unused-function -D__id_t_defined -DUNITTESTS -DURI_THROW_ON_ERROR ${NO_INFO} ${NO_DEBUG} -DGSL_THROW_ON_CONTRACT_VIOLATION -Dlest_FEATURE_AUTO_REGISTER=1 -DHAVE_LEST_MAIN")
 
-if(NOT DEFINED ${INCLUDEOS_ROOT})
-  set(INCLUDEOS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+if (COVERAGE)
+  if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-instr-generate -fcoverage-mapping")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage -fprofile-arcs -ftest-coverage")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
+  endif()
 endif()
 
-set(SRC ${INCLUDEOS_ROOT}/src)
-set(TEST ${INCLUDEOS_ROOT}/test)
+# Neccesary apple stuff because native bundle is old/bad
+if (APPLE)
+  if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
+    message(STATUS "Including brew bundled libc++")
+    execute_process(COMMAND brew "--prefix" "llvm@6" OUTPUT_VARIABLE BREW_LLVM)
+    string(STRIP ${BREW_LLVM} BREW_LLVM)
+    set(BREW_LIBCXX_INC "-L${BREW_LLVM}/lib -I${BREW_LLVM}/include/c++/v1")
+    message(STATUS "Brew libc++ location: " ${BREW_LIBCXX_INC})
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${BREW_LIBCXX_INC} -stdlib=libc++ -nostdinc++ -lc++experimental -Wno-unused-command-line-argument")
+  else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mmacosx-version-min=10.12")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mmacosx-version-min=10.12")
+  endif()
+endif()
+
+set(TEST ${CMAKE_CURRENT_SOURCE_DIR})
 
 include_directories(
-  ${INCLUDEOS_ROOT}/api
-  ${INCLUDEOS_ROOT}/src/
-  ${INCLUDEOS_ROOT}/src/include
-  ${INCLUDEOS_ROOT}/mod/
-  ${INCLUDEOS_ROOT}/mod/GSL
-  ${INCLUDEOS_ROOT}/mod/uzlib/src
-  ${TEST}/lest/include
   ${TEST}/lest_util
+  ${TEST}/../api
+  ${TEST}/../src/include
+  #TODO move to the right place
+  ${TEST}/../lib/LiveUpdate/include
 )
 
 set(LEST_UTIL
   ${TEST}/lest_util/lestmain.cxx
   ${TEST}/lest_util/os_mock.cpp
+  ${TEST}/lest_util/mock_fs.cpp
+  ${TEST}/lest_util/random.cpp
 )
 
 set(TEST_SOURCES
-  ${TEST}/fs/unit/block_device_test.cpp
   ${TEST}/fs/unit/memdisk_test.cpp
   ${TEST}/fs/unit/path_test.cpp
   ${TEST}/fs/unit/vfs_test.cpp
-  ${TEST}/hw/unit/cpu_test.cpp
+  ${TEST}/fs/unit/unit_fs.cpp
+  ${TEST}/fs/unit/unit_fat.cpp
+  #${TEST}/hw/unit/cpu_test.cpp
   ${TEST}/hw/unit/mac_addr_test.cpp
-  ${TEST}/hw/unit/nic_test.cpp
-  ${TEST}/kernel/unit/kprint_test.cpp
+  ${TEST}/hw/unit/usernet.cpp
+  ${TEST}/hw/unit/virtio_queue.cpp
+  ${TEST}/kernel/unit/arch.cpp
+  ${TEST}/kernel/unit/block.cpp
+  ${TEST}/kernel/unit/cpuid.cpp
   ${TEST}/kernel/unit/memmap_test.cpp
+  ${TEST}/kernel/unit/memory.cpp
   ${TEST}/kernel/unit/os_test.cpp
+  ${TEST}/kernel/unit/rng.cpp
   ${TEST}/kernel/unit/service_stub_test.cpp
+  ${TEST}/kernel/unit/test_hal.cpp
+  ${TEST}/kernel/unit/unit_events.cpp
+  ${TEST}/kernel/unit/unit_liveupdate.cpp
+  ${TEST}/kernel/unit/unit_timers.cpp
+  ${TEST}/kernel/unit/x86_paging.cpp
+  ${TEST}/net/unit/addr_test.cpp
   ${TEST}/net/unit/bufstore.cpp
   ${TEST}/net/unit/checksum.cpp
+  ${TEST}/net/unit/cidr.cpp
+  ${TEST}/net/unit/conntrack_test.cpp
   ${TEST}/net/unit/cookie_test.cpp
+  ${TEST}/net/unit/dhcp.cpp
   ${TEST}/net/unit/dhcp_message_test.cpp
-  ${TEST}/net/unit/dns_test.cpp
+  ${TEST}/net/unit/error.cpp
   ${TEST}/net/unit/http_header_test.cpp
   ${TEST}/net/unit/http_status_codes_test.cpp
   ${TEST}/net/unit/http_method_test.cpp
@@ -82,164 +165,115 @@ set(TEST_SOURCES
   ${TEST}/net/unit/http_response_test.cpp
   ${TEST}/net/unit/http_time_test.cpp
   ${TEST}/net/unit/http_version_test.cpp
+  ${TEST}/net/unit/interfaces_test.cpp
   ${TEST}/net/unit/ip4_addr.cpp
   ${TEST}/net/unit/ip4.cpp
+  ${TEST}/net/unit/ip4_packet_test.cpp
+  ${TEST}/net/unit/ip6.cpp
+  ${TEST}/net/unit/ip6_addr.cpp
+  ${TEST}/net/unit/ip6_addr_list_test.cpp
+  ${TEST}/net/unit/ip6_packet_test.cpp
+  ${TEST}/net/unit/nat_test.cpp
+  ${TEST}/net/unit/napt_test.cpp
   ${TEST}/net/unit/packets.cpp
+  ${TEST}/net/unit/path_mtu_discovery.cpp
+  ${TEST}/net/unit/port_util_test.cpp
+  ${TEST}/net/unit/router_test.cpp
   ${TEST}/net/unit/socket.cpp
+  ${TEST}/net/unit/stateful_addr_test.cpp
+  ${TEST}/net/unit/tcp_benchmark.cpp
   ${TEST}/net/unit/tcp_packet_test.cpp
+  ${TEST}/net/unit/tcp_read_buffer_test.cpp
+  ${TEST}/net/unit/tcp_read_request_test.cpp
   ${TEST}/net/unit/tcp_write_queue.cpp
-  ${TEST}/net/unit/router.cpp
+  ${TEST}/net/unit/websocket.cpp
   ${TEST}/posix/unit/fd_map_test.cpp
   ${TEST}/posix/unit/inet_test.cpp
+  ${TEST}/posix/unit/unit_fd.cpp
   ${TEST}/util/unit/base64.cpp
-  ${TEST}/util/unit/sha1.cpp
-  ${TEST}/util/unit/chunk_test.cpp
+  ${TEST}/util/unit/bitops.cpp
+  ${TEST}/util/unit/buddy_alloc_test.cpp
+  ${TEST}/util/unit/config.cpp
   ${TEST}/util/unit/crc32.cpp
   ${TEST}/util/unit/delegate.cpp
+  ${TEST}/util/unit/fixed_list_alloc_test.cpp
   ${TEST}/util/unit/fixed_queue.cpp
   ${TEST}/util/unit/fixed_vector.cpp
   ${TEST}/util/unit/isotime.cpp
   ${TEST}/util/unit/logger_test.cpp
   ${TEST}/util/unit/membitmap.cpp
-  ${TEST}/util/unit/path_to_regex_no_options.cpp
+  #${TEST}/util/unit/path_to_regex_no_options.cpp
   ${TEST}/util/unit/path_to_regex_parse.cpp
   ${TEST}/util/unit/path_to_regex_options.cpp
   ${TEST}/util/unit/percent_encoding_test.cpp
+  ${TEST}/util/unit/pmr_alloc_test.cpp
   ${TEST}/util/unit/ringbuffer.cpp
+  ${TEST}/util/unit/sha1.cpp
   ${TEST}/util/unit/statman.cpp
   ${TEST}/util/unit/syslogd_test.cpp
   ${TEST}/util/unit/syslog_facility_test.cpp
   ${TEST}/util/unit/uri_test.cpp
+  ${TEST}/util/unit/lstack/test_lstack_nodes.cpp
+  ${TEST}/util/unit/lstack/test_lstack_merging.cpp
+  ${TEST}/util/unit/lstack/test_lstack_nomerge.cpp
 )
 
-set(OS_SOURCES
-  ${SRC}/fs/disk.cpp
-  ${SRC}/fs/fat.cpp
-  ${SRC}/fs/fat_async.cpp
-  ${SRC}/fs/fat_sync.cpp
-  ${SRC}/fs/filesystem.cpp
-  ${SRC}/fs/mbr.cpp
-  ${SRC}/fs/memdisk.cpp
-  ${SRC}/fs/path.cpp
-  ${SRC}/hw/block_device.cpp
-  ${SRC}/hw/msi.cpp
-  ${SRC}/hw/pci_device.cpp
-  ${SRC}/hw/pci_msi.cpp
-  ${SRC}/hw/ps2.cpp
-  ${SRC}/hw/serial.cpp
-  ${SRC}/kernel/block.cpp
-  ${SRC}/kernel/cpuid.cpp
-  ${SRC}/kernel/elf.cpp
-  ${SRC}/kernel/irq_manager.cpp
-  ${SRC}/kernel/kernel_start.cpp
-  ${SRC}/kernel/main_call.cpp
-  ${SRC}/kernel/memmap.cpp
-  ${SRC}/kernel/os.cpp
-  ${SRC}/kernel/heap.cpp
-  ${SRC}/kernel/pci_manager.cpp
-  ${SRC}/kernel/rng.cpp
-  ${SRC}/kernel/service_stub.cpp
-  ${SRC}/kernel/syscalls.cpp
-  ${SRC}/kernel/terminal.cpp
-  ${SRC}/kernel/terminal_disk.cpp
-  ${SRC}/net/buffer_store.cpp
-  ${SRC}/net/dns/client.cpp
-  ${SRC}/net/dns/dns.cpp
-  ${SRC}/net/ethernet/ethernet.cpp
-  ${SRC}/net/http/client.cpp
-  ${SRC}/net/http/client_connection.cpp
-  ${SRC}/net/http/cookie.cpp
-  ${SRC}/net/http/header.cpp
-  ${SRC}/net/http/header_fields.cpp
-  ${SRC}/net/http/message.cpp
-  ${SRC}/net/http/mime_types.cpp
-  ${SRC}/net/http/request.cpp
-  ${SRC}/net/http/response.cpp
-  ${SRC}/net/http/status_codes.cpp
-  ${SRC}/net/http/time.cpp
-  ${SRC}/net/http/version.cpp
-  ${SRC}/net/inet_common.cpp
-  ${SRC}/net/inet4.cpp
-  ${SRC}/net/ip4/arp.cpp
-  ${SRC}/net/ip4/icmp4.cpp
-  ${SRC}/net/ip4/ip4.cpp
-  ${SRC}/net/ip4/udp.cpp
-  ${SRC}/net/ip4/udp_socket.cpp
-  ${SRC}/net/dhcp/dh4client.cpp
-  ${SRC}/net/tcp/connection.cpp
-  ${SRC}/net/tcp/connection_states.cpp
-  ${SRC}/net/tcp/listener.cpp
-  ${SRC}/net/tcp/rttm.cpp
-  ${SRC}/net/tcp/tcp.cpp
-  ${SRC}/net/tcp/write_queue.cpp
-  ${SRC}/posix/fcntl.cpp
-  ${SRC}/posix/fd.cpp
-  ${SRC}/posix/sys/select.cpp
-  ${SRC}/posix/arpa/inet.cpp
-  ${SRC}/util/async.cpp
-  ${SRC}/util/logger.cpp
-  ${SRC}/util/path_to_regex.cpp
-  ${SRC}/util/percent_encoding.cpp
-  ${SRC}/util/sha1.cpp
-  ${SRC}/util/statman.cpp
-  ${SRC}/util/syslog_facility.cpp
-  ${SRC}/util/syslogd.cpp
-  ${SRC}/util/tar.cpp
-  ${SRC}/util/uri.cpp
-  ${SRC}/virtio/virtio_queue.cpp
-)
+# Disable (don't build) currently non-working tests on macOS
+if (APPLE)
+  list(REMOVE_ITEM TEST_SOURCES
+    ${TEST}/net/unit/websocket.cpp
+    )
+endif()
 
-set(MOD_OBJECTS
-  ${INCLUDEOS_ROOT}/mod/http-parser/http_parser.c
-  ${INCLUDEOS_ROOT}/mod/uzlib/src/adler32.c
-  ${INCLUDEOS_ROOT}/mod/uzlib/src/crc32.c
-  ${INCLUDEOS_ROOT}/mod/uzlib/src/tinflate.c
-  ${INCLUDEOS_ROOT}/mod/uzlib/src/tinfgzip.c
-)
+if (COVERAGE)
+  list(REMOVE_ITEM TEST_SOURCES ${TEST}/util/unit/path_to_regex_no_options.cpp)
+endif()
 
 if(EXTRA_TESTS)
   set(GENERATE_SUPPORT_FILES ON)
   message(STATUS "Adding some extra tests")
-  list(APPEND TEST_SOURCES ${TEST}/kernel/unit/rdrand_test.cpp)
   list(APPEND TEST_SOURCES ${TEST}/util/unit/tar_test.cpp)
-
 endif()
 
-if(COVERAGE)
-  message(STATUS "Coverage")
-  list(REMOVE_ITEM TEST_SOURCES ${TEST}/util/unit/path_to_regex_no_options.cpp)
-  set_property(SOURCE ${OS_SOURCES} PROPERTY COMPILE_FLAGS --coverage)
-  set_property(SOURCE ${TEST_SOURCES} PROPERTY COMPILE_FLAGS --coverage)
-  set_property(SOURCE ${MOD_OBJECTS} PROPERTY COMPILE_FLAGS --coverage)
-  set_property(SOURCE ${LEST_UTIL} PROPERTY COMPILE_FLAGS --coverage)
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
+#TODO get from conan!!! or should the test be in liveupdate and not vise versa?
+
+#if we could do add directory here it would be a lot cleaner..
+#TODO investigate
+
+enable_testing()
+if (CPPCHECK)
+  find_program(CMAKE_CXX_CPPCHECK NAMES cppcheck)
+  if (NOT CMAKE_CXX_CPPCHECK)
+    message(WARNING "cppcheck not found")
+  else()
+      list(
+          APPEND CMAKE_CXX_CPPCHECK
+              "--enable=warning"
+              "--inconclusive"
+              "--force"
+              "--inline-suppr"
+            #TODO   "--suppressions-list=${CMAKE_SOURCE_DIR}/CppCheckSuppressions.txt"
+      )
+  endif()
 endif()
 
-if(TRAVIS)
-  message(STATUS "Travis")
-  list(REMOVE_ITEM TEST_SOURCES ${TEST}/kernel/unit/rdrand_test.cpp)
-endif()
+add_subdirectory(../src os)
+add_subdirectory(../lib/LiveUpdate liveupdate)
+add_library(lest_util ${LEST_UTIL})
 
-if ("${ARCH}" STREQUAL "ARCH_ARMv7")
-  list(REMOVE_ITEM TEST_SOURCES ${TEST}/hw/unit/cpu_test.cpp)
-  list(REMOVE_ITEM OS_SOURCES ${SRC}/hw/ps2.cpp)
-  list(REMOVE_ITEM OS_SOURCES ${SRC}/hw/serial.cpp)
-  list(REMOVE_ITEM OS_SOURCES ${SRC}/kernel/cpuid.cpp)
-  list(REMOVE_ITEM OS_SOURCES ${SRC}/kernel/irq_manager.cpp)
-  list(REMOVE_ITEM OS_SOURCES ${SRC}/kernel/rdrand.cpp)
-  list(REMOVE_ITEM OS_SOURCES ${SRC}/kernel/terminal.cpp)
-endif("${ARCH}" STREQUAL "ARCH_ARMv7")
+file(COPY memdisk.fat DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
-# Only build selected sources with SINGLE
-if(NOT SINGLE)
-  set(SOURCES ${MOD_OBJECTS} ${OS_SOURCES} ${TEST_SOURCES} ${LEST_UTIL})
-else()
-  set(SOURCES ${MOD_OBJECTS} ${OS_SOURCES} ${SINGLE} ${LEST_UTIL})
-endif()
-
-if ("${ARCH}" STREQUAL "ARCH_ARMv7")
-  set_property(SOURCE ${SOURCES} PROPERTY COMPILE_FLAGS -mfpu=vfpv3-d16)
-endif("${ARCH}" STREQUAL "ARCH_ARMv7")
+SET(TEST_BINARIES)
+foreach(T ${TEST_SOURCES})
+  #CTest style
+  #get the filename witout extension
+  get_filename_component(NAME ${T} NAME_WE)
+  add_executable(${NAME} ${T})
+  target_link_libraries(${NAME} liveupdate os lest_util os m stdc++ ${CONAN_LIB_DIRS_HTTP-PARSER}/http_parser.o)
+  add_test(${NAME} bin/${NAME})
+  #add to list of tests for dependencies
+  list(APPEND TEST_BINARIES ${NAME})
+endforeach()
 
 if(SILENT_BUILD)
   message(STATUS "NOTE: Building with some warnings turned off")
@@ -247,14 +281,85 @@ if(SILENT_BUILD)
   " -Wno-unused-variable -Wno-unused-parameter -Wno-sign-compare -Wno-format")
 endif()
 
-add_executable(unittests ${SOURCES})
-install(TARGETS unittests DESTINATION ${TEST})
-install(DIRECTORY lest/include/lest DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+#disabled old DUNITTESTS
+if (COVERAGE)
+  if (NOT DEFINED CODECOV_OUTPUTFILE )
+      set( CODECOV_OUTPUTFILE coverage.info )
+  endif()
+
+  if (NOT DEFINED CODECOV_HTMLOUTPUTDIR )
+      set( CODECOV_HTMLOUTPUTDIR ${CMAKE_CURRENT_BINARY_DIR}/html )
+  endif()
+  if (CMAKE_COMPILER_IS_GNUCXX)
+    if (NOT DEFINED CODECOV_GCOV)
+      find_program(CODECOV_GCOV gcov)
+      if (CODECOV_GCOV-NOTFOUND)
+        message(FATAL_ERROR "gcov not found")
+      endif()
+    endif()
+    if (NOT DEFINED CODECOV_LCOV)
+      find_program(CODECOV_LCOV lcov)
+      if (CODECOV_LCOV-NOTFOUND)
+        message(FATAL_ERROR "lcov not found")
+      endif()
+    endif()
+    if (NOT DEFINED CODECOV_GENHTML)
+      find_program(CODECOV_GENHTML genhtml)
+      if (CODECOV_GENHTML-NOTFOUND)
+        message(FATAL_ERROR "genhtml not found")
+      endif()
+    endif()
+
+    #run this command allways althoug it depends on all the sources beeing buildt
+    add_custom_target(coverage_init ALL
+      COMMENT "Generating empty initial coverage"
+      COMMAND ${CODECOV_LCOV} -q --gcov-tool ${CODECOV_GCOV} -b ${CMAKE_CURRENT_BINARY_DIR} -d ${CMAKE_CURRENT_BINARY_DIR} -o base.info -c -i
+      DEPENDS ${TEST_BINARIES}
+      BYPRODUCTS base.info
+    )
+    add_custom_target(execute_test
+      COMMENT "Executing test"
+      COMMAND ctest
+      DEPENDS ${TEST_BINARIES}
+    )
+
+    #generate coverage for the excuted code.. TODO make it run all the code ?
+    add_custom_target(coverage_executed
+      COMMENT "Generating executed coverage"
+      COMMAND ${CODECOV_LCOV} -q --gcov-tool ${CODECOV_GCOV} -b ${CMAKE_CURRENT_BINARY_DIR} -d ${CMAKE_CURRENT_BINARY_DIR} -o test.info -c
+      BYPRODUCTS test.info
+      DEPENDS execute_test
+    )
+    #merge generated coverage and executed coverage.
+    add_custom_target(coverage_merged
+      COMMENT "Merging initial and executed coverage"
+      COMMAND ${CODECOV_LCOV} -q --gcov-tool ${CODECOV_GCOV} -a base.info -a test.info -o unstripped.info
+      SOURCES test.info base.info
+      BYPRODUCTS unstripped.info
+      DEPENDS coverage_init coverage_executed
+    )
+
+    #strip from report /test path /usr/lib and /usr/include.. TODO add more if neccesary eg */.conan/*
+    add_custom_target(coverage_stripped
+      COMMENT "Stripping default paths and test from report"
+      COMMAND ${CODECOV_LCOV} -q -r unstripped.info '*/.conan/*' '*/test/*' '/usr/lib/*' '/usr/include/*'  -o ${CODECOV_OUTPUTFILE}
+      DEPENDS coverage_merged
+      SOURCES unstripped.info
+      BYPRODUCTS ${CODECOV_OUTPUTFILE}
+    )
+    #generate HTML coverage report
+    add_custom_target(coverage
+      COMMENT "Generating Code Coverage Web report"
+      COMMAND ${CODECOV_GENHTML} -q -o ${CODECOV_HTMLOUTPUTDIR} ${CODECOV_OUTPUTFILE}
+      DEPENDS coverage_stripped
+      SOURCES ${CODECOV_OUTPUTFILE}
+    )
+  endif()
+endif()
 
 if (GENERATE_SUPPORT_FILES)
-
-  add_custom_command(
-    TARGET unittests PRE_BUILD
+  add_custom_command( OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test-tar-gz-inside.tar
+    PRE_BUILD
     COMMAND ${CMAKE_COMMAND} -E tar cf ${CMAKE_CURRENT_BINARY_DIR}/test-single.tar ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
     COMMAND ${CMAKE_COMMAND} -E tar cf ${CMAKE_CURRENT_BINARY_DIR}/test-multiple.tar ${CMAKE_CURRENT_SOURCE_DIR}/*.py
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt ${CMAKE_CURRENT_BINARY_DIR}/test-invalid.tar
@@ -266,26 +371,8 @@ if (GENERATE_SUPPORT_FILES)
 endif()
 
 add_custom_target(
-  cppcheck
-  COMMAND cppcheck
-  --enable=warning,style,performance,portability
-  --force
-  --platform=unix32
-  --std=c++11
-  --verbose
-  --quiet
-  -I ${INCLUDEOS_ROOT}/api
-  -I ${INCLUDEOS_ROOT}/src/include
-  -I ${INCLUDEOS_ROOT}/mod/
-  -I ${INCLUDEOS_ROOT}/mod/GSL
-  -I ${INCLUDEOS_ROOT}/mod/uzlib/src
-  ${OS_SOURCES}
-)
-
-add_custom_target(
   clang-tidy
   COMMAND clang-tidy-3.8
   -checks=clang-analyzer-core.*,clang-analyzer-cplusplus.*,clang-analyzer-deadcode.*,clang-analyzer-nullability,cppcoreguidelines*,modernize*,performance*,misc*,-misc-virtual-near-miss
   -p=compile_commands.json
-  ${OS_SOURCES}
 )

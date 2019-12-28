@@ -1,26 +1,11 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2016-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 #include <net/dhcp/dhcpd.hpp>
+#include <net/inet>
 #include <rtc>
 
 using namespace net;
 using namespace dhcp;
 
-DHCPD::DHCPD(UDP& udp, IP4::addr pool_start, IP4::addr pool_end,
+DHCPD::DHCPD(UDP& udp, ip4::Addr pool_start, ip4::Addr pool_end,
   uint32_t lease, uint32_t max_lease, uint8_t pending)
 : stack_{udp.stack()},
   socket_{udp.bind(DHCP_SERVER_PORT)},
@@ -36,7 +21,6 @@ DHCPD::DHCPD(UDP& udp, IP4::addr pool_start, IP4::addr pool_end,
     throw DHCP_exception{"Invalid pool"};
 
   init_pool();
-  listen();
 }
 
 bool DHCPD::record_exists(const Record::byte_seq& client_id) const noexcept {
@@ -55,7 +39,7 @@ int DHCPD::get_record_idx(const Record::byte_seq& client_id) const noexcept {
   return -1;
 }
 
-int DHCPD::get_record_idx_from_ip(IP4::addr ip) const noexcept {
+int DHCPD::get_record_idx_from_ip(ip4::Addr ip) const noexcept {
   for (size_t i = 0; i < records_.size(); i++) {
     if (records_.at(i).ip() == ip)
       return i;
@@ -63,7 +47,7 @@ int DHCPD::get_record_idx_from_ip(IP4::addr ip) const noexcept {
   return -1;
 }
 
-bool DHCPD::valid_pool(IP4::addr start, IP4::addr end) const {
+bool DHCPD::valid_pool(ip4::Addr start, ip4::Addr end) const {
   if (start > end or start == end or inc_addr(start) == end)
       return false;
 
@@ -77,7 +61,7 @@ bool DHCPD::valid_pool(IP4::addr start, IP4::addr end) const {
 }
 
 void DHCPD::init_pool() {
-  IP4::addr start = pool_start_;
+  ip4::Addr start = pool_start_;
   while (start < pool_end_ and network_address(start) == network_address(server_id_)) {
     pool_.emplace(std::make_pair(start, Status::AVAILABLE));
     start = inc_addr(start);
@@ -86,16 +70,17 @@ void DHCPD::init_pool() {
   pool_.emplace(std::make_pair(pool_end_, Status::AVAILABLE));
 }
 
-void DHCPD::update_pool(IP4::addr ip, Status new_status) {
+void DHCPD::update_pool(ip4::Addr ip, Status new_status) {
   auto it = pool_.find(ip);
   if (it not_eq pool_.end())
     it->second = new_status;
 }
 
 void DHCPD::listen() {
-  socket_.on_read([&] (IP4::addr, UDP::port_t port,
-    const char* data, size_t len) {
-
+  socket_.on_read(
+  [this] (net::Addr, UDP::port_t port,
+          const char* data, size_t len)
+  {
     if (port == DHCP_CLIENT_PORT) {
       if (len < sizeof(Message))
         return;
@@ -132,7 +117,7 @@ void DHCPD::resolve(const Message* msg) {
   }
 
   const auto cid = get_client_id(msg);
-  if (cid.empty() or std::all_of(cid.begin(), cid.end(), [] (int i) { return i == 0; })) {
+  if (std::all_of(cid.begin(), cid.end(), [] (int i) { return i == 0; })) {
     debug("Invalid client id\n");
     return;
   }
@@ -230,7 +215,7 @@ void DHCPD::handle_request(const Message* msg) {
   const auto* opt = reader.find_option<option::server_identifier>();
   // Server identifier from client:
   if (opt != nullptr) {  // Then this is a response to a DHCPOFFER message
-    IP4::addr sid = *(opt->addr<ip4::Addr>());
+    ip4::Addr sid = *(opt->addr<ip4::Addr>());
 
     if (sid not_eq server_id()) { // The client has not chosen this server
 
@@ -259,7 +244,7 @@ void DHCPD::handle_request(const Message* msg) {
 
       // If ciaddr is zero and requested IP address is filled in with the yiaddr value from the chosen DHCPOFFER:
       // Client state: SELECTING
-      if (msg->ciaddr == IP4::addr{0} and get_requested_ip_in_opts(msg) == record.ip()) {
+      if (msg->ciaddr == ip4::Addr{0} and get_requested_ip_in_opts(msg) == record.ip()) {
         // RECORD
         record.set_status(Status::IN_USE);
         // POOL
@@ -301,7 +286,7 @@ void DHCPD::verify_or_extend_lease(const Message* msg) {
     return;
   }
 
-  if (msg->ciaddr == IP4::addr{0}) {
+  if (msg->ciaddr == ip4::Addr{0}) {
     // Then the client is seeking to verify a previously allocated, cached configuration
     // Client state: INIT-REBOOT
 
@@ -336,7 +321,7 @@ void DHCPD::verify_or_extend_lease(const Message* msg) {
     return;
   }
 
-  if (get_requested_ip_in_opts(msg) == IP4::addr{0} and msg->ciaddr not_eq IP4::addr{0}) {
+  if (get_requested_ip_in_opts(msg) == ip4::Addr{0} and msg->ciaddr not_eq ip4::Addr{0}) {
     // Client is in RENEWING state
     // The client is then completely configured and is trying to extend its lease.
     // This message will be unicast, so no relay agents will be involved in its transmission.
@@ -421,8 +406,8 @@ void DHCPD::offer(const Message* msg) {
 
   offer.set_hw_addr(htype::ETHER, sizeof(MAC::Addr)); // assume ethernet
   offer.set_xid(ntohl(msg->xid));
-  //offer.set_ciaddr(IP4::addr{0});
-  //offer.set_siaddr(IP4::addr{0});   // IP address of next bootstrap server
+  //offer.set_ciaddr(ip4::Addr{0});
+  //offer.set_siaddr(ip4::Addr{0});   // IP address of next bootstrap server
   // yiaddr - IP address offered to the client from the pool
   offer.set_yiaddr(free_addr);
 
@@ -478,13 +463,13 @@ void DHCPD::offer(const Message* msg) {
 
   // If the giaddr field in a DHCP message from a client is non-zero, the server sends any return
   // messages to the DHCP server port on the BOOTP relay agent whose address appears in giaddr
-  if (msg->giaddr != IP4::addr{0}) {
+  if (msg->giaddr != ip4::Addr{0}) {
     socket_.sendto(msg->giaddr, DHCP_SERVER_PORT, buffer, sizeof(buffer));
     return;
   }
   // If the giaddr field is zero and the ciaddr field is non-zero, then the server unicasts
   // DHCPOFFER and DHCPACK messages to the address in ciaddr
-  if (msg->ciaddr != IP4::addr{0}) {
+  if (msg->ciaddr != ip4::Addr{0}) {
     socket_.sendto(msg->ciaddr, DHCP_CLIENT_PORT, buffer, sizeof(buffer));
     return;
   }
@@ -584,13 +569,13 @@ void DHCPD::request_ack(const Message* msg) {
 
   // If the giaddr field in a DHCP message from a client is non-zero, the server sends any return
   // messages to the DHCP server port on the BOOTP relay agent whose address appears in giaddr
-  if (msg->giaddr != IP4::addr{0}) {
+  if (msg->giaddr != ip4::Addr{0}) {
     socket_.sendto(msg->giaddr, DHCP_SERVER_PORT, buffer, sizeof(buffer));
     return;
   }
   // If the giaddr field is zero and the ciaddr field is non-zero, then the server unicasts
   // DHCPOFFER and DHCPACK messages to the address in ciaddr
-  if (msg->ciaddr != IP4::addr{0}) {
+  if (msg->ciaddr != ip4::Addr{0}) {
     socket_.sendto(msg->ciaddr, DHCP_CLIENT_PORT, buffer, sizeof(buffer));
     return;
   }
@@ -661,13 +646,13 @@ Record::byte_seq DHCPD::get_client_id(const Message* msg) const {
     return {msg->chaddr.begin(), msg->chaddr.end()};
 }
 
-IP4::addr DHCPD::get_requested_ip_in_opts(const Message* msg) const {
+ip4::Addr DHCPD::get_requested_ip_in_opts(const Message* msg) const {
   Message_reader reader{msg};
   const auto* opt = reader.find_option<option::req_addr>();
   return (opt != nullptr) ? *(opt->addr<ip4::Addr>()) : 0;
 }
 
-IP4::addr DHCPD::get_remote_netmask(const Message* msg) const {
+ip4::Addr DHCPD::get_remote_netmask(const Message* msg) const {
   Message_reader reader{msg};
   const auto* opt = reader.find_option<option::subnet_mask>();
   return (opt != nullptr) ? *(opt->addr<ip4::Addr>()) : 0;
@@ -696,7 +681,7 @@ bool DHCPD::on_correct_network(const Message* msg) const {
   return false;
 }
 
-void DHCPD::clear_offered_ip(IP4::addr ip) {
+void DHCPD::clear_offered_ip(ip4::Addr ip) {
   int ridx = get_record_idx_from_ip(ip);
   if (ridx not_eq -1)
     records_.erase(records_.begin() + ridx);
@@ -732,10 +717,10 @@ void DHCPD::print(const Message* msg) const
   debug("XID: %u\n", msg->xid);
   debug("SECS: %u\n", msg->secs);
   debug("FLAGS: %u\n", msg->flags);
-  debug("CIADDR (IP4::addr): %s\n", msg->ciaddr.to_string().c_str());
-  debug("YIADDR (IP4::addr): %s\n", msg->yiaddr.to_string().c_str());
-  debug("SIADDR (IP4::addr): %s\n", msg->siaddr.to_string().c_str());
-  debug("GIADDR (IP4::addr): %s\n", msg->giaddr.to_string().c_str());
+  debug("CIADDR (ip4::Addr): %s\n", msg->ciaddr.to_string().c_str());
+  debug("YIADDR (ip4::Addr): %s\n", msg->yiaddr.to_string().c_str());
+  debug("SIADDR (ip4::Addr): %s\n", msg->siaddr.to_string().c_str());
+  debug("GIADDR (ip4::Addr): %s\n", msg->giaddr.to_string().c_str());
 
   debug("\nCHADDR:\n");
   for (int i = 0; i < Message::CHADDR_LEN; i++)

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <sys/stat.h>
 #include <errno.h>
@@ -21,15 +5,20 @@
 #include <fd_map.hpp>
 #include <fs/vfs.hpp>
 #include <memdisk>
-#include <net/tcp/packet.hpp>
 #include <fcntl.h>
 #include <unistd.h>
+#include <posix_strace.hpp>
+#include <rtc>
 
 #ifndef DEFAULT_UMASK
 #define DEFAULT_UMASK 002
 #endif
 
 extern fs::Disk_ptr& fs_disk();
+inline unsigned round_up(unsigned n, unsigned div) {
+  Expects(div > 0);
+  return (n + div - 1) / div;
+}
 
 int chmod(const char *path, mode_t mode) {
   (void) path;
@@ -175,6 +164,7 @@ int stat(const char *path, struct stat *buf)
 {
   if (buf == nullptr)
   {
+    PRINT("stat(%s, %p) == %d\n", path, buf, -1);
     errno = EFAULT;
     return -1;
   }
@@ -194,16 +184,18 @@ int stat(const char *path, struct stat *buf)
       buf->st_mtime = ent.modified();
       buf->st_blocks = buf->st_size > 0 ? round_up(buf->st_size, 512) : 0;
       buf->st_blksize = fs::MemDisk::SECTOR_SIZE;
+      PRINT("stat(%s, %p) == %d\n", path, buf, 0);
       return 0;
     }
     else {
+      PRINT("stat(%s, %p) == %d\n", path, buf, -1);
       errno = EIO;
       return -1;
     }
   }
   catch (...)
   {
-    printf("stat %s NOT FOUND\n", path);
+    PRINT("stat(%s, %p) == %d\n", path, buf, -1);
     errno = EIO;
     return -1;
   }
@@ -220,8 +212,80 @@ mode_t umask(mode_t cmask)
   return DEFAULT_UMASK;
 }
 
-int fstat(int, struct stat* st) {
-  debug("SYSCALL FSTAT Dummy, returning OK 0");
-  st->st_mode = S_IFCHR;
-  return 0;
+int fstat(int fd, struct stat* stat_buf)
+{
+  if (fd < 0) {
+    PRINT("fstat(%d, %p) == %d\n", fd, stat_buf, -1);
+    errno = EBADF;
+    return -1;
+  }
+  if (stat_buf == nullptr) {
+    PRINT("fstat(%d, %p) == %d\n", fd, stat_buf, -1);
+    errno = EINVAL;
+    return -1;
+  }
+  if (fd < 4 || fd == 4)
+  {
+    if (fd == 4) {
+      PRINT("fstat(%d, %p) == %d\n", fd, stat_buf, 0);
+    }
+    stat_buf->st_dev  = 6;
+    stat_buf->st_ino  = fd;
+    stat_buf->st_mode = 0x21b6;
+    stat_buf->st_nlink = 1;
+    stat_buf->st_uid = 0;
+    stat_buf->st_gid = 0;
+    stat_buf->st_rdev  = 265;
+    stat_buf->st_size    = 0;
+    if (fd == 4)
+    {
+      stat_buf->st_atime = RTC::now();
+      stat_buf->st_mtime = RTC::now();
+      stat_buf->st_ctime = RTC::now();
+    }
+    stat_buf->st_blksize = 4096;
+    stat_buf->st_blocks  = 0;
+    return 0;
+  }
+  PRINT("fstat(%d, %p) == %d\n", fd, stat_buf, -1);
+  errno = ENOSYS;
+  return -1;
+}
+
+extern "C"
+int __xstat(int ver, const char * path, struct stat * stat_buf)
+{
+  PRINT("__xstat(%d, '%s', %p)\n", ver, path, stat_buf);
+  errno = ENOSYS;
+  return -1;
+}
+
+extern "C"
+int __lxstat(int ver, const char * path, struct stat * stat_buf)
+{
+  PRINT("__lxstat(%d, '%s', %p)\n", ver, path, stat_buf);
+  errno = ENOSYS;
+  return -1;
+}
+
+#define LINUX_STAT_VER  1
+
+extern "C"
+int __fxstat(int ver, int fd, struct stat * stat_buf)
+{
+  PRINT("__fxstat(%d, %d, %p)\n", ver, fd, stat_buf);
+  if (fd < 0) {
+    errno = EBADF;
+    return -1;
+  }
+  if (stat_buf == nullptr) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (ver != LINUX_STAT_VER) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  return fstat(fd, stat_buf);
 }

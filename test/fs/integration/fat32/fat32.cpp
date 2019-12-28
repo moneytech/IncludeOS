@@ -1,24 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <os>
 #include <stdio.h>
 #include <cassert>
 
+#include <hal/machine.hpp>
 #include <fs/disk.hpp>
 
 // Includes std::string internal_banana
@@ -42,12 +27,12 @@ void test2()
   CHECKSERT(disk->dev().size() == SIZE / 512, "Disk size is %llu bytes", SIZE);
 
   disk->init_fs(disk->MBR,
-  [] (fs::error_t err, auto& fs)
+  [] (fs::error_t err, fs::File_system& fs)
   {
     CHECKSERT(not err, "Filesystem mounted on VBR1");
 
     fs.stat(shallow_banana,
-    [] (auto err, const auto& ent) {
+    [] (fs::error_t err, const fs::Dirent& ent) {
       INFO("FAT32", "Shallow banana");
 
       CHECKSERT(not err, "Stat %s", shallow_banana.c_str());
@@ -60,18 +45,18 @@ void test2()
     });
 
     fs.read_file(shallow_banana,
-    [] (fs::error_t err, fs::buffer_t buf, uint64_t len)
+    [] (fs::error_t err, fs::buffer_t buf)
     {
       INFO("FAT32", "Read file");
       CHECKSERT(not err, "read_file: Read %s asynchronously", shallow_banana.c_str());
       printf("%s\n", internal_banana.c_str());
-      std::string banana((char*) buf.get(), len);
+      std::string banana((const char*) buf->data(), buf->size());
       CHECKSERT(banana == internal_banana, "Correct shallow banana");
       is_done();
     });
 
     fs.stat(deep_banana,
-    [] (auto err, const auto& ent) {
+    [] (fs::error_t err, const fs::Dirent& ent) {
       INFO("FAT32", "Deep banana");
       auto& fs = disk->fs();
       CHECKSERT(not err, "Stat %s", deep_banana.c_str());
@@ -83,12 +68,12 @@ void test2()
 
       // asynch file reading test
       fs.read(ent, 0, ent.size(),
-      [] (fs::error_t err, fs::buffer_t buf, uint64_t len)
+      [] (fs::error_t err, fs::buffer_t buf)
       {
         INFO("FAT32", "Read inside stat");
         CHECKSERT(not err, "read: Read %s asynchronously", deep_banana.c_str());
 
-        std::string banana((char*) buf.get(), len);
+        std::string banana((const char*) buf->data(), buf->size());
         CHECKSERT(banana == internal_banana, "Correct deep fried banana");
         is_done();
       });
@@ -99,7 +84,7 @@ void test2()
 
 void Service::start()
 {
-  auto& device = hw::Devices::drive(0);
+  auto& device = os::machine().get<hw::Block_device>(0);
   disk = std::make_shared<fs::Disk> (device);
 
   INFO("FAT32", "Running tests for FAT32");
@@ -112,7 +97,7 @@ void Service::start()
 
   // auto-mount filesystem
   disk->init_fs(
-  [] (fs::error_t err, auto& fs)
+  [] (fs::error_t err, fs::File_system& fs)
   {
     CHECKSERT(!err, "Filesystem auto-initializedd");
 

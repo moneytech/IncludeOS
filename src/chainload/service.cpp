@@ -1,29 +1,15 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-#include <kernel/os.hpp>
-#include <kernel/syscalls.hpp>
+#include <os.hpp>
+#include <boot/multiboot.h>
 #include <util/elf_binary.hpp>
 #include <service>
 #include <cstdint>
+#include <cstring>
 
-static const bool verb = false;
+extern bool os_enable_boot_logging;
+
 #define MYINFO(X,...) \
-  if (verb) { INFO("chainload", X, ##__VA_ARGS__); }
+  if (os_enable_boot_logging) printf("[ chainloader ] " X "\n",  ##__VA_ARGS__);
 
 extern "C" void hotswap(const char* base, int len, char* dest, void* start,
                         uintptr_t magic, uintptr_t bootinfo);
@@ -39,8 +25,10 @@ void promote_mod_to_kernel()
   Expects (bootinfo->mods_count);
   auto* mod =  (multiboot_module_t*)bootinfo->mods_addr;
 
-  // Set command line param to mod param
-  bootinfo->cmdline = mod->cmdline;
+  // Move commandline to a relatively safe area
+  const uintptr_t RELATIVELY_SAFE_AREA = 0x8000;
+  strcpy((char*) RELATIVELY_SAFE_AREA, (const char*) mod->cmdline);
+  bootinfo->cmdline = RELATIVELY_SAFE_AREA;
 
   // Subtract one module
   (bootinfo->mods_count)--;
@@ -51,44 +39,60 @@ void promote_mod_to_kernel()
 
 void Service::start()
 {
-  auto mods = OS::modules();
+
+  auto mods = os::modules();
   MYINFO("%u-bit chainloader found %u modules",
         sizeof(void*) * 8, mods.size());
 
-  if (mods.size() <= 0) {
+  if (mods.size() < 1) {
     MYINFO("No modules passed to multiboot. Exiting.");
     exit(1);
   }
-  multiboot_module_t binary = mods[0];
+
+  auto binary = mods[0];
 
   Elf_binary<Elf64> elf (
       {(char*)binary.mod_start,
         (int)(binary.mod_end - binary.mod_start)});
 
-  void* hotswap_addr = (void*)0x200000;
-  extern char __hotswap_end;
 
-  debug("Moving hotswap function (begin at %p end at %p) of size %i",
-         &hotswap,  &__hotswap_end, &__hotswap_end - (char*)&hotswap);
+  auto phdrs = elf.program_headers();
+  int loadable = 0;
+
+  for (auto& phdr : phdrs){
+    if (phdr.p_type == PT_LOAD)
+      loadable++;
+  }
+
+  auto init_seg = phdrs[0];
+  // Expects(loadable == 1);
+  // TODO: Handle multiple loadable segments properly
+  Expects(init_seg.p_type == PT_LOAD);
+
+  // Move hotswap function away from binary
+  void* hotswap_addr = (void*)0x2000;
+  extern char __hotswap_end;
   memcpy(hotswap_addr,(void*)&hotswap, &__hotswap_end - (char*)&hotswap );
 
-  debug("Preparing for jump to %s. Multiboot magic: 0x%x, addr 0x%x",
-         (char*)binary.cmdline, __multiboot_magic, __multiboot_addr);
+  MYINFO("Preparing for jump to %s. Multiboot magic: 0x%x, addr 0x%x",
+         (char*)binary.params, __multiboot_magic, __multiboot_addr);
 
-  char* base  = (char*)binary.mod_start;
-  int len = (int)(binary.mod_end - binary.mod_start);
-  // FIXME: determine kernel base from ELF program header
-  char* dest = (char*)0xA00000;
-  void* start = (void*)elf.entry();
+  // Prepare to load ELF segment
+  char* base  = (char*)binary.mod_start + init_seg.p_offset;
+  int len = (int)((char*)binary.mod_end - base);
+  char* dest = (char*) init_seg.p_paddr;
+  void* start = (void*) elf.entry();
 
-  MYINFO("Hotswapping with params: base: %p, len: %i, dest: %p, start: %p",
-         base, len, dest, start);
-
+  // Update multiboot info for new kernel
   promote_mod_to_kernel();
 
+  // Clear interrupts
   asm("cli");
+
+  // Call hotswap, overwriting current kernel
   ((decltype(&hotswap))hotswap_addr)(base, len, dest, start, __multiboot_magic, __multiboot_addr);
 
-  panic("Should have jumped\n");
+  os::panic("Should have jumped\n");
+
   __builtin_unreachable();
 }

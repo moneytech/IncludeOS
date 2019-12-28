@@ -1,20 +1,4 @@
 // -*- C++ -*-
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef INCLUDEOS_COMMON_HEADER
@@ -38,8 +22,8 @@ static_assert(sizeof(void*) == 8, "Pointer must match arch");
 #include "debug"
 #include "info"
 
-#define LIKELY(x)       __builtin_expect(!!(x), 1)
-#define UNLIKELY(x)     __builtin_expect(!!(x), 0)
+// LIKELY/UNLIKELY
+#include "branch_prediction"
 
 #include <gsl/gsl>
 
@@ -48,19 +32,40 @@ static_assert(sizeof(void*) == 8, "Pointer must match arch");
 /* the reason for termination.                      */
 #if defined(OS_TERMINATE_ON_CONTRACT_VIOLATION)
 
-#include <cassert>
-
-#define OS_STRINGIFY(x) #x
+#include <cstdlib>
 
 #undef Expects
 #undef Ensures
 
-#define Expects(cond) \
-  assert(LIKELY(cond) && "OS: Precondition failed")
+#ifdef INCLUDEOS_SMP_ENABLE
+#include <smp>
+#endif
 
-#define Ensures(cond) \
-  assert(LIKELY(cond) && "OS: Postcondition failed")
+#include <os.hpp>
+inline void __expect_fail(const char *expr, const char *file, int line, const char *func){
+#ifdef INCLUDEOS_SMP_ENABLE
+  SMP::global_lock();
+#endif
+  fprintf(stderr, "%s:%i:%s\n>>> %s\n",file, line, func, expr);
+  fflush(NULL);
+#ifdef INCLUDEOS_SMP_ENABLE
+  SMP::global_unlock();
+#endif
+  os::panic(expr);
+}
+
+#define Expects(x) ((void)((x) || (__expect_fail("Expects failed: "#x, __FILE__, __LINE__, __func__),0)))
+#define Ensures(x) ((void)((x) || (__expect_fail("Ensures failed: "#x, __FILE__, __LINE__, __func__),0)))
 
 #endif //< defined(OS_TERMINATE_ON_CONTRACT_VIOLATION)
 
+namespace os {
+// parameter for noexcept specifier when bypassing noexcept for testing
+#if defined(TEST)
+  constexpr bool hard_noexcept = false;
+#else
+  constexpr bool hard_noexcept = true;
+#endif
+
+}
 #endif //< INCLUDEOS_COMMON_HEADER

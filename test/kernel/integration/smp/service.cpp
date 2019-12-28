@@ -1,25 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <os>
 #include <cassert>
 #include <smp>
 #include <timers>
-#include <kernel/irq_manager.hpp>
+#include <kernel/events.hpp>
 
 static int irq_times = 0;
 
@@ -28,7 +12,7 @@ struct alignas(SMP_ALIGN) per_cpu_test
   int value;
 
 };
-static SMP_ARRAY<per_cpu_test> testing;
+static SMP::Array<per_cpu_test> testing;
 
 #include <malloc.h>
 void smp_advanced_test()
@@ -80,7 +64,7 @@ void smp_advanced_test()
     [] (int) {
       static int times = 0;
       SMP::global_lock();
-      printf("This is timer from a CPU core\n");
+      printf("This is timer from CPU core %d\n", SMP::cpu_id());
       times++;
 
       if (times     == SMP::cpu_count()-1
@@ -89,7 +73,7 @@ void smp_advanced_test()
       }
       SMP::global_unlock();
     });
-  });
+  }, i);
   // start working on tasks
   SMP::signal();
 }
@@ -111,13 +95,29 @@ static void random_irq_handler()
 static const uint8_t IRQ = 110;
 void SMP::init_task()
 {
-  IRQ_manager::get().subscribe(IRQ, random_irq_handler);
+  Events::get().subscribe(IRQ, random_irq_handler);
 }
 
 void Service::start()
 {
+
+  for (const auto& i : SMP::active_cpus())
+  {
+    SMP::global_lock();
+    printf("CPU %i active \n", i);
+    SMP::global_unlock();
+
+    SMP::add_task([i]{
+        SMP::global_lock();
+        printf("CPU %i, id %i running task \n", i, SMP::cpu_id());
+        SMP::global_unlock();
+      }, i);
+
+    SMP::signal(i);
+  }
   // trigger interrupt
   SMP::broadcast(IRQ);
+
   // the rest
   smp_advanced_test();
 }

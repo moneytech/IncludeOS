@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2016-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_WS_HEADER_HPP
@@ -33,8 +17,6 @@ namespace net {
     PING      = 9,
     PONG      = 10
   }; // < op_code
-
-  static constexpr uint8_t WS_HEADER_MAXLEN{16};
 
   struct ws_header
   {
@@ -115,7 +97,16 @@ namespace net {
     }
 
     uint16_t header_length() const noexcept
-    { return sizeof(ws_header) + data_offset(); }
+    {
+      return sizeof(ws_header) + data_offset();
+    }
+    static size_t header_length(size_t len, bool client) noexcept
+    {
+      size_t ofs = sizeof(ws_header) + (client ? 4 : 0);
+      if (len > 65535) return ofs + 8;
+      if (len > 125)   return ofs + 2;
+      return ofs;
+    }
 
     const char* data() const noexcept {
       return &vla[data_offset()];
@@ -123,18 +114,13 @@ namespace net {
     char* data() noexcept {
       return &vla[data_offset()];
     }
-    void masking_algorithm()
+    void masking_algorithm(char* ptr)
     {
-      char* ptr  = data();
       const char* mask = keymask();
       for (size_t i = 0; i < data_length(); i++)
       {
         ptr[i] = ptr[i] xor mask[i & 3];
       }
-    }
-
-    size_t reported_length() const noexcept {
-      return header_length() + data_length();
     }
 
     char vla[0];

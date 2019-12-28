@@ -1,46 +1,13 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <service>
 #include <os>
-#include <memdisk>
-#include <fs/vfs.hpp>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <cstring>
 #include <lest/lest.hpp>
-
+#include <unistd.h>
 
 #include <fstream>
-
-fs::Disk_ptr& memdisk() {
-  static auto disk = fs::new_shared_memdisk();
-
-  if (not disk->fs_ready()) {
-    disk->init_fs([](fs::error_t err, auto&) {
-        if (err) {
-          printf("ERROR MOUNTING DISK\n");
-          printf("%s\n", err.reason().c_str());
-          exit(127);
-        }
-      });
-    }
-  return disk;
-}
 
 const lest::test specification[] =
 {
@@ -264,9 +231,6 @@ const lest::test specification[] =
       EXPECT(c != EOF);
       int res = fclose(f);
       EXPECT(res == 0);
-      // try to read another character
-      c = fgetc(f);
-      EXPECT(c == EOF);
     }
   },
   {
@@ -274,10 +238,10 @@ const lest::test specification[] =
       FILE* f = fopen("/mnt/disk/file3", "r");
       EXPECT(f != nullptr);
       char buf[256];
-      memset(buf, 0, 256);
-      char* ptr = fgets(buf, 256, f);
+      memset(buf, 0, sizeof(buf));
+      const char* ptr = fgets(buf, sizeof(buf), f);
       EXPECT(ptr != nullptr);
-      int cmp = strcmp(buf, "even more content\n");
+      int cmp = strncmp(buf, "even more content\n", sizeof(buf));
       EXPECT(cmp == 0);
       int res = fclose(f);
       EXPECT(res == 0);
@@ -293,7 +257,6 @@ const lest::test specification[] =
       size_t wanted_count {7};
       size_t count = fread(buf, sizeof(char), wanted_count, f);
       EXPECT(count == wanted_count);
-      printf("fread result: %d\n", count);
       int cmp = strcmp(buf, "content");
       EXPECT(cmp == 0);
       int res = fclose(f);
@@ -319,10 +282,6 @@ const lest::test specification[] =
 int main()
 {
   INFO("POSIX file_fd", "Running tests for POSIX file_fd");
-
-  // mount a disk with contents for testing
-  auto root = memdisk()->fs().stat("/");
-  fs::mount("/mnt/disk", root, "test root");
 
   auto failed = lest::run(specification, {"-p"});
   Expects(not failed);

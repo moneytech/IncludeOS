@@ -1,24 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef UTIL_URI_HPP
 #define UTIL_URI_HPP
 
+#include <vector>
 #include <string>
 #include <unordered_map>
 
@@ -135,6 +120,13 @@ class URI {
   ///
   util::sview scheme() const noexcept;
 
+  /**
+   * @brief      Check whether the scheme is secure (like https or wss) or not.
+   *
+   * @return     true if secure, false otherwise
+   */
+  bool scheme_is_secure() const noexcept;
+
   ///
   /// Get userinfo.
   ///
@@ -175,13 +167,6 @@ class URI {
   /// @return host and port information
   ///
   std::string host_and_port() const;
-
-  ///
-  /// Get the raw port number in decimal character representation.
-  ///
-  /// @return The raw port number in decimal character representation
-  ///
-  util::sview port_str() const noexcept;
 
   ///
   /// Get numeric port number.
@@ -252,7 +237,7 @@ class URI {
   ///
   /// @return A string representation of this class
   ///
-  const std::string& to_string() const noexcept;
+  std::string to_string() const;
 
   ///
   /// Operator to transform this class into string form
@@ -285,14 +270,13 @@ private:
   ///
   /// A copy of the data representing a uri
   ///
-  std::string uri_str_;
+  std::vector<char> uri_str_;
 
   uint16_t port_ {0xFFFF};
 
   util::sview scheme_;
   util::sview userinfo_;
   util::sview host_;
-  util::sview port_str_;
   util::sview path_;
   util::sview query_;
   util::sview fragment_;

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <common.cxx>
 #include <arpa/inet.h>
@@ -60,7 +44,7 @@ CASE("IPv4 address manipulation - addr to pointer")
   // Too small address buffer yeilds error
   char addrstr2[11];
   res = inet_ntop(AF_INET, &addr, (char*)&addrstr2, sizeof(addrstr2));
-  EXPECT(errno == ENOSPC);
+  EXPECT(errno == EAFNOSUPPORT);
 
   // No buffer returns nullptr
   res = inet_ntop(AF_INET, &addr, nullptr, 0);
@@ -85,7 +69,7 @@ CASE("IPv4 address manipulation - pointer to addr")
   res = inet_pton(AF_INET, "256.666.666.1338", &addr);
   EXPECT(res == 0);
 
-  // Unsupported IP4 format
+  // IP4 format invalid
   res = inet_pton(AF_INET, "255.255.0", &addr);
   EXPECT(res == 0);
 }

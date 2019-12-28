@@ -1,34 +1,18 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #ifndef IP4_PACKET_IP4_HPP
 #define IP4_PACKET_IP4_HPP
 
+#include "header.hpp"
 #include <cassert>
 #include <net/packet.hpp>
 #include <net/inet_common.hpp>
-#include <net/ip4/ip4.hpp>
 
 namespace net {
 
   /** IPv4 packet. */
   class PacketIP4 : public Packet {
   public:
-    static constexpr size_t DEFAULT_TTL {64};
+    static constexpr int DEFAULT_TTL = 64;
 
     using Span = gsl::span<Byte>;
     using Cspan = gsl::span<const Byte>;
@@ -74,7 +58,7 @@ namespace net {
 
     /** Get Fragment offset field */
     uint16_t ip_frag_offs() const noexcept
-    { return ntohs(ip_header().frag_off_flags) & 0xe; }
+    { return ntohs(ip_header().frag_off_flags) & 0x1fff; }
 
     /** Get Time-To-Live field */
     uint8_t ip_ttl() const noexcept
@@ -86,7 +70,7 @@ namespace net {
 
     /** Get the IP header checksum field as-is */
     uint16_t ip_checksum() const noexcept
-    { return ntohs(ip_header().check); }
+    { return ip_header().check; }
 
     /** Get source address */
     const ip4::Addr& ip_src() const noexcept
@@ -99,8 +83,16 @@ namespace net {
     /** Get IP data length. */
     uint16_t ip_data_length() const noexcept
     {
-      Expects(size() and static_cast<size_t>(size()) >= sizeof(IP4::header));
+      //Expects(size() and static_cast<size_t>(size()) >= sizeof(ip4::Header));
       return size() - ip_header_length();
+    }
+
+    /** Adjust packet size to match IP header's tot_len in case of padding */
+    void adjust_size_from_header() {
+      auto ip_len = ip_total_length();
+      if (UNLIKELY(size() > ip_len)) {
+        set_data_end(ip_len);
+      }
     }
 
     /** Get total data capacity of IP packet in bytes  */
@@ -108,7 +100,7 @@ namespace net {
     { return capacity() - ip_header_length(); }
 
     /** Compute IP header checksum on header as-is */
-    uint16_t compute_checksum() noexcept
+    uint16_t compute_ip_checksum() noexcept
     { return net::checksum(&ip_header(), ip_header_length()); };
 
 
@@ -120,6 +112,7 @@ namespace net {
     void set_ip_version(uint8_t ver) noexcept
     {
       Expects(ver < 0x10);
+      ip_header().version_ihl &= 0x0F;
       ip_header().version_ihl |= ver << 4;
     }
 
@@ -127,6 +120,7 @@ namespace net {
     void set_ihl(uint8_t ihl) noexcept
     {
       Expects(ihl < 0x10);
+      ip_header().version_ihl &= 0xF0;
       ip_header().version_ihl |= ihl;
     }
 
@@ -152,7 +146,10 @@ namespace net {
 
     /** Set flags field */
     void set_ip_flags(ip4::Flags f)
-    { ip_header().frag_off_flags |= static_cast<uint16_t>(f) << 13; }
+    {
+      ip_header().frag_off_flags |= static_cast<uint16_t>(f) << 13;
+      ip_header().frag_off_flags = htons(ip_header().frag_off_flags);
+    }
 
     /** Set fragment offset header field */
     void set_ip_frag_offs(uint16_t offs)
@@ -165,13 +162,25 @@ namespace net {
     void set_ip_ttl(uint8_t ttl) noexcept
     { ip_header().ttl = ttl; }
 
+    /**
+     * @brief      Decrement Time-To-Live by 1 and adjust the checksum.
+     */
+    void decrement_ttl()
+    {
+      Expects(ip_ttl() != 0);
+      ip_header().ttl--;
+      // RFC 1141 p. 1
+      uint16_t sum = ntohs(ip_header().check + htons(0x100)); // increment checksum high byte
+      ip_header().check = htons(sum + (sum>>16)); // add carry
+    }
+
     /** Set protocol header field */
     void set_protocol(Protocol p) noexcept
     { ip_header().protocol = static_cast<uint8_t>(p); }
 
     /** Set IP header checksum field directly */
     void set_ip_checksum(uint16_t sum) noexcept
-    { ip_header().check = ntohs(sum); }
+    { ip_header().check = sum; }
 
     /** Calculate and set IP header checksum field */
     void set_ip_checksum() noexcept {
@@ -194,8 +203,8 @@ namespace net {
      **/
     void set_ip_data_length(uint16_t length) noexcept
     {
-      Expects(sizeof(IP4::header) + length <= (size_t) capacity());
-      set_data_end(sizeof(IP4::header) + length);
+      Expects(sizeof(ip4::Header) + length <= (size_t) capacity());
+      set_data_end(sizeof(ip4::Header) + length);
     }
 
     /** Last modifications before transmission */
@@ -208,16 +217,11 @@ namespace net {
     void init(Protocol proto = Protocol::HOPOPT) noexcept {
       Expects(size() == 0);
       auto& hdr = ip_header();
-      std::memset(&ip_header(), 0, sizeof(ip4::Header));
-      hdr.version_ihl    = 0x45;
-      //hdr.ds_ecn         = 0;
-      //hdr.id             = 0;
-      //hdr.frag_off_flags = 0;
+      hdr = {};
+      hdr.tot_len        = 0x1400; // Big-endian 20
       hdr.ttl            = DEFAULT_TTL;
       hdr.protocol       = static_cast<uint8_t>(proto);
-      //hdr.check          = 0;
-      hdr.tot_len        = 0x1400; // Big-endian 20
-      increment_data_end(sizeof(IP4::header));
+      increment_data_end(sizeof(ip4::Header));
     }
 
     Span ip_data() {
@@ -226,6 +230,10 @@ namespace net {
 
     Cspan ip_data() const {
       return {ip_data_ptr(), ip_data_length()};
+    }
+
+    bool validate_length() const noexcept {
+      return this->size() == ip_header_length() + ip_data_length();
     }
 
   protected:
@@ -251,10 +259,10 @@ namespace net {
     { ip_header().tot_len = htons(size()); }
 
     const ip4::Header& ip_header() const noexcept
-    { return *reinterpret_cast<const IP4::header*>(layer_begin()); }
+    { return *reinterpret_cast<const ip4::Header*>(layer_begin()); }
 
     ip4::Header& ip_header() noexcept
-    { return *reinterpret_cast<IP4::header*>(layer_begin()); }
+    { return *reinterpret_cast<ip4::Header*>(layer_begin()); }
 
   }; //< class PacketIP4
 } //< namespace net

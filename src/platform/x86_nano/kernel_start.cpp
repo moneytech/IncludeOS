@@ -1,70 +1,64 @@
+
 #include <kprint>
 #include <info>
-#include <service>
-#include <smp>
+#include <kernel.hpp>
+#include <os.hpp>
+#include <kernel/service.hpp>
 #include <boot/multiboot.h>
 
-extern  void default_stdout_handlers();
-extern  void __platform_init();
-
 extern "C" {
-  void __init_serial1();
   void __init_sanity_checks();
-  void kernel_sanity_checks();
-  uintptr_t _multiboot_free_begin(uintptr_t boot_addr);
   uintptr_t _move_symbols(uintptr_t loc);
   void _init_bss();
   void _init_heap(uintptr_t);
-  void _init_c_runtime();
   void _init_syscalls();
-  void __libc_init_array();
-  uintptr_t _end;
-
-  void kernel_start(uintptr_t magic, uintptr_t addr){
-
-    // Initialize serial port 1
-    __init_serial1();
-
-    // generate checksums of read-only areas etc.
-    __init_sanity_checks();
-
-    // Determine where free memory starts
-    uintptr_t free_mem_begin = reinterpret_cast<uintptr_t>(&_end);
-
-    if (magic == MULTIBOOT_BOOTLOADER_MAGIC) {
-      free_mem_begin = _multiboot_free_begin(addr);
-    }
-
-    // Preserve symbols from the ELF binary
-    free_mem_begin += _move_symbols(free_mem_begin);
-
-    // Initialize zero-initialized vars
-    _init_bss();
-
-    // Initialize heap
-    _init_heap(free_mem_begin);
-
-    //Initialize stack-unwinder, call global constructors etc.
-    _init_c_runtime();
-
-    // Initialize system calls
-    _init_syscalls();
-
-    //Initialize stdout handlers
-    default_stdout_handlers();
-
-    // Call global ctors
-    __libc_init_array();
-
-    __platform_init();
-
-    // Start the service
-    Service::start();
-
-    // verify certain read-only sections in memory
-    kernel_sanity_checks();
-
-    __arch_poweroff();
-
-  }
 }
+
+uintptr_t _multiboot_free_begin(uintptr_t boot_addr);
+uintptr_t _multiboot_memory_end(uintptr_t boot_addr);
+extern bool os_default_stdout;
+
+extern "C"
+void kernel_start(uintptr_t magic, uintptr_t addr)
+{
+  // Determine where free memory starts
+  extern char _end;
+  uintptr_t free_mem_begin = (uintptr_t) &_end;
+  uintptr_t mem_end = os::Arch::max_canonical_addr;
+
+  if (magic == MULTIBOOT_BOOTLOADER_MAGIC) {
+    free_mem_begin = _multiboot_free_begin(addr);
+    mem_end = _multiboot_memory_end(addr);
+  }
+
+  // Preserve symbols from the ELF binary
+  free_mem_begin += _move_symbols(free_mem_begin);
+
+  // Initialize .bss
+  extern char _BSS_START_, _BSS_END_;
+  __builtin_memset(&_BSS_START_, 0, &_BSS_END_ - &_BSS_START_);
+
+  // Initialize heap
+  kernel::init_heap(free_mem_begin, mem_end);
+
+  // Initialize system calls
+  _init_syscalls();
+
+  // Initialize stdout handlers
+  if (os_default_stdout)
+    os::add_stdout(&kernel::default_stdout);
+
+  kernel::start(magic, addr);
+
+  // Start the service
+  Service::start();
+
+  __arch_poweroff();
+}
+
+/*
+extern "C" int __divdi3() {}
+extern "C" int __moddi3() {}
+extern "C" unsigned int __udivdi3() {}
+extern "C" unsigned int __umoddi3() {}
+*/

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 //#undef NO_DEBUG
 #define DEBUG // Allow debug
@@ -21,7 +5,6 @@
 
 #include <os>
 #include <virtio/virtio.hpp>
-#include <hw/pci.hpp>
 #if !defined(__MACH__)
 #include <malloc.h>
 #else
@@ -56,8 +39,6 @@ void Virtio::Queue::init_queue(int size, char* buf)
   debug("\t * Queue used  @ 0x%lx \n ",(long)_queue.used);
 }
 
-#include <timers>
-
 /** Constructor */
 Virtio::Queue::Queue(const std::string& name,
                      uint16_t size, uint16_t q_index, uint16_t iobase)
@@ -67,6 +48,9 @@ Virtio::Queue::Queue(const std::string& name,
   size_t total_bytes = virtq_size(size);
   // Allocate page-aligned size and clear it
   void* buffer = memalign(PAGE_SIZE, total_bytes);
+  if (! buffer)
+    os::panic("Virtio queue could not allocate aligned queue area");
+
   memset(buffer, 0, total_bytes);
 
   debug(">>> Virtio Queue %s of size %i (%u bytes) initializing \n",
@@ -80,8 +64,6 @@ Virtio::Queue::Queue(const std::string& name,
 
   debug(" >> Virtio Queue %s setup complete. \n", qname.c_str());
 }
-
-
 
 /** Ported more or less directly from SanOS. */
 int Virtio::Queue::enqueue(gsl::span<Token> buffers)
@@ -167,12 +149,19 @@ void Virtio::Queue::disable_interrupts() {
 void Virtio::Queue::enable_interrupts() {
   _queue.avail->flags &= ~(1 << VIRTQ_AVAIL_F_NO_INTERRUPT);
 }
+bool Virtio::Queue::interrupts_enabled() const noexcept {
+  return (_queue.avail->flags & (1 << VIRTQ_AVAIL_F_NO_INTERRUPT)) == 0;
+}
 
+// this will force most of the implementation to not use PCI
+// and thus be more easily testable
+#include <hw/pci.hpp>
 void Virtio::Queue::kick()
 {
-#if defined(ARCH_x86)
   update_avail_idx();
-
+#if defined (PLATFORM_UNITTEST)
+  // do nothing here
+#elif defined(ARCH_x86)
   // Std. §3.2.1 pt. 4
   __arch_hw_barrier();
   if (!(_queue.used->flags & VIRTQ_USED_F_NO_NOTIFY)){

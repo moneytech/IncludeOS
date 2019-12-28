@@ -1,58 +1,32 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <cstdio>
 #include <cstring>
 
 #include <common>
+#include <fs/common.hpp>
 #include <fs/memdisk.hpp>
 #include <statman>
 
-extern "C" {
-  char _DISK_START_;
-  char _DISK_END_;
-}
+
+extern char _DISK_START_;
+extern char _DISK_END_;
 
 namespace fs {
 
   MemDisk::MemDisk() noexcept
-  : Block_device(),
-    image_start_ { &_DISK_START_ },
-    image_end_   { &_DISK_END_ },
-
-    stat_read( Statman::get().create(
-               Stat::UINT64, device_name() + ".reads").get_uint64() )
+    : MemDisk(&_DISK_START_, &_DISK_END_)
   {
-    INFO("Memdisk", "Initializing");
+    INFO("Memdisk", "Initializing start=%p end=%p", image_start_, image_end_);
   }
 
-  MemDisk::buffer_t MemDisk::read_sync(block_t blk)
+  MemDisk::MemDisk(const char* start, const char* end) noexcept
+    : Block_device(),
+      image_start_ { start },
+      image_end_   { end },
+      stat_read( Statman::get().create(
+               Stat::UINT64, device_name() + ".reads").get_uint64() )
   {
-    stat_read++;
-
-    auto sector_loc = image_start_ + blk * block_size();
-    // Disallow reading memory past disk image
-    if (UNLIKELY(sector_loc >= image_end_))
-      return buffer_t{};
-
-    auto buffer = new uint8_t[block_size()];
-    memcpy(buffer, sector_loc, block_size());
-
-    return buffer_t{buffer, std::default_delete<uint8_t[]>()};
+    Expects(image_start_ <= image_end_);
   }
 
   MemDisk::buffer_t MemDisk::read_sync(block_t blk, size_t cnt)
@@ -64,12 +38,9 @@ namespace fs {
 
     // Disallow reading memory past disk image
     if (UNLIKELY(end_loc > image_end_))
-      return buffer_t{};
+      return nullptr;
 
-    auto buffer = new uint8_t[cnt * block_size()];
-    memcpy(buffer, start_loc, cnt * block_size());
-
-    return buffer_t{buffer, std::default_delete<uint8_t[]>()};
+    return fs::construct_buffer(start_loc, end_loc);
   }
 
   MemDisk::block_t MemDisk::size() const noexcept {
@@ -78,8 +49,6 @@ namespace fs {
     return (image_end_ - image_start_) / block_size();
   }
 
-  void MemDisk::deactivate() {
-
-  }
+  void MemDisk::deactivate() {}
 
 } //< namespace fs

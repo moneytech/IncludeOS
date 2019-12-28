@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_TCP_WRITE_QUEUE_HPP
@@ -22,7 +6,7 @@
 #include <debug>
 #include <delegate>
 #include <deque>
-#include <util/chunk.hpp>
+#include "common.hpp"
 
 namespace net {
 namespace tcp {
@@ -41,7 +25,7 @@ namespace tcp {
 class Write_queue {
 public:
   using WriteCallback = delegate<void(size_t)>;
-  using WriteBuffer   = Chunk;
+  using WriteBuffer   = buffer_t;
 
 public:
   explicit Write_queue(WriteCallback cb = nullptr);
@@ -50,14 +34,11 @@ public:
     Add a request to the back of the queue.
     If the queue was empty/finished, point current to the new request.
   */
-  void push_back(Chunk&& wr) {
+  void push_back(buffer_t wr) {
     debug2("<WriteQueue> Inserted WR: size=%u, current=%u, size=%u\n",
-      (uint32_t) wr.length(), current_, (uint32_t) size());
+      (uint32_t) wr->size(), current_, (uint32_t) size());
     q.push_back(std::move(wr));
   }
-
-  void push_back(const Chunk& wr)
-  { q.push_back(wr); }
 
   /*
     Advances the queue forward.
@@ -109,15 +90,15 @@ public:
   { return acked_; }
 
   const uint8_t* nxt_data() const
-  { return q.at(current_).data() + offset_; }
+  { return &q.at(current_)->at(offset_); }
 
   auto nxt_rem() const
-  { return q.at(current_).length() - offset_; }
+  { return q.at(current_)->size() - offset_; }
 
   auto bytes_total() const {
     uint32_t n = 0;
     for(auto& it : q)
-      n += it.length();
+      n += it->size();
     return n;
   }
 
@@ -137,7 +118,7 @@ public:
   int serialize_to(void*) const;
 
 private:
-  std::deque<Chunk> q;
+  std::deque<WriteBuffer> q;
   /* Current element (index) */
   uint32_t current_;
   /* Offset of nxt() */

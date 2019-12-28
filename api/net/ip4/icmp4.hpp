@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #ifndef NET_IP4_ICMPv4_HPP
 #define NET_IP4_ICMPv4_HPP
@@ -52,10 +36,10 @@ namespace net {
     uint16_t seq() const noexcept
     { return seq_; }
 
-    IP4::addr src() const noexcept
+    ip4::Addr src() const noexcept
     { return src_; }
 
-    IP4::addr dst() const noexcept
+    ip4::Addr dst() const noexcept
     { return dst_; }
 
     ICMP_type type() const noexcept
@@ -78,8 +62,8 @@ namespace net {
   private:
     uint16_t      id_{0};
     uint16_t      seq_{0};
-    IP4::addr     src_{0,0,0,0};
-    IP4::addr     dst_{0,0,0,0};
+    ip4::Addr     src_{0,0,0,0};
+    ip4::Addr     dst_{0,0,0,0};
     ICMP_type     type_{ICMP_type::NO_REPLY};
     uint8_t       code_{0};
     uint16_t      checksum_{0};
@@ -140,11 +124,11 @@ namespace net {
     void parameter_problem(Packet_ptr pckt, uint8_t error_pointer);
 
     // May
-    void timestamp_request(IP4::addr ip);
+    void timestamp_request(ip4::Addr ip);
     void timestamp_reply(icmp4::Packet& req);
 
-    void ping(IP4::addr ip);
-    void ping(IP4::addr ip, icmp_func callback, int sec_wait = SEC_WAIT_FOR_REPLY);
+    void ping(ip4::Addr ip);
+    void ping(ip4::Addr ip, icmp_func callback, int sec_wait = SEC_WAIT_FOR_REPLY);
 
     void ping(const std::string& hostname);
     void ping(const std::string& hostname, icmp_func callback, int sec_wait = SEC_WAIT_FOR_REPLY);
@@ -186,6 +170,15 @@ namespace net {
     void forward_to_transport_layer(icmp4::Packet& req);
 
     /**
+     *  If a Destination Unreachable: Fragmentation Needed error mesage is received, the Path MTUs in
+     *  IP should be updated and the packetization/transportation layer should be notified (through Inet)
+     *  RFC 1191 (Path MTU Discovery IP4), 1981 (Path MTU Discovery IP6) and 4821 (Packetization Layer Path MTU Discovery)
+     *  A Fragmentation Needed error message is sent as a response to a packet with an MTU that is too big
+     *  for a node in the path to its destination and with the Don't Fragment bit set as well
+     */
+    void handle_too_big(icmp4::Packet& req);
+
+    /**
      *  Find the ping-callback that this packet is a response to, execute it and erase the object
      *  from the ping_callbacks_ map
      */
@@ -212,7 +205,7 @@ namespace net {
       }
     }
 
-    void send_request(IP4::addr dest_ip, ICMP_type type, ICMP_code code,
+    void send_request(ip4::Addr dest_ip, ICMP_type type, ICMP_code code,
       icmp_func callback = nullptr, int sec_wait = SEC_WAIT_FOR_REPLY, uint16_t sequence = 0);
 
     /** Send response without id and sequence number */

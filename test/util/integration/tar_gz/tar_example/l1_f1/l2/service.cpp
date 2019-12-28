@@ -1,25 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <cmath> // rand()
 #include <sstream>
 
 #include <os>
-#include <net/inet4>
+#include <net/inet>
 #include <timers>
 
 using namespace std::chrono;
@@ -68,9 +52,9 @@ const std::string NOT_FOUND = "HTTP/1.1 404 Not Found\nConnection: close\n\n";
 void Service::start(const std::string&)
 {
   // DHCP on interface 0
-  auto& inet = net::Inet4::ifconfig(10.0);
+  auto& inet = net::Inet::ifconfig(10.0);
   // static IP in case DHCP fails
-  net::Inet4::ifconfig(
+  net::Inet::ifconfig(
     { 10,0,0,42 },     // IP
     { 255,255,255,0 }, // Netmask
     { 10,0,0,1 },      // Gateway

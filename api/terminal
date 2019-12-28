@@ -1,0 +1,33 @@
+// -*-C++-*-
+
+#pragma once
+#ifndef API_TERMINAL_HEADER
+#define API_TERMINAL_HEADER
+
+#include <delegate>
+#include <string>
+#include <vector>
+class Terminal;
+
+struct TerminalProgram
+{
+  using main_func = delegate<int(Terminal&, const std::vector<std::string>&)>;
+
+  TerminalProgram(const std::string& descr, main_func func)
+    : desc(descr), main(func) {}
+
+  std::string desc;
+  main_func   main;
+};
+
+/**
+ *  Register a terminal program globally that will be present on all (future)
+ *  terminals created after registering the command.
+ *  Registering the same program name twice will overwrite existing.
+ *
+ *  see: Terminal::register_program(std::string name, TerminalProgram)
+**/
+
+#include "kernel/terminal.hpp"
+
+#endif

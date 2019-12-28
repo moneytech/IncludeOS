@@ -1,17 +1,35 @@
+add_definitions(-DPLATFORM_x86_pc)
+
+set(PLATFORM_TARGET ${ARCH}_pc)
 ### x86 PC specific ###
 set(X86_PC_OBJECTS
-  start.asm
-  platform.cpp
-  gdt.cpp
   acpi.cpp
-  ioapic.cpp
   apic.cpp
   apic_timer.cpp
   apic_revenant.cpp
-  smp.cpp
-  pit.cpp
+  clocks.cpp
+  cmos.cpp
+  cmos_clock.cpp
   cpu_freq_sampling.cpp
+  gdt.cpp
+  idt.cpp
+  init_libc.cpp
+  ioapic.cpp
+  kernel_start.cpp
+  os.cpp
   pic.cpp
+  pit.cpp
+  platform.cpp
+  rand.cpp
+  sanity_checks.cpp
+  serial1.cpp
+  smbios.cpp
+  smp.cpp
+  softreset.cpp
+  start.asm
+  ### KVM features ###
+  ../kvm/kvmclock.cpp
+  ../kvm/pv_eoi.cpp
   )
 
 add_custom_command(
@@ -21,9 +39,18 @@ add_custom_command(
 	DEPENDS apic_boot.asm
 )
 
-add_library(x86_pc STATIC ${X86_PC_OBJECTS} apic_boot.o)
-add_dependencies(x86_pc PrecompiledLibraries)
+
+add_library(${PLATFORM_TARGET} STATIC ${X86_PC_OBJECTS} apic_boot.o)
+
+set_target_properties(${PLATFORM_TARGET}
+  PROPERTIES
+  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/platform
+  ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/platform
+  ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/platform
+)
+
+# disable sanitizers on kernel_start and others
 
 add_subdirectory(boot)
-set_target_properties(x86_pc PROPERTIES LINKER_LANGUAGE CXX)
-install(TARGETS x86_pc DESTINATION includeos/${ARCH}/platform/)
+set_target_properties(${PLATFORM_TARGET} PROPERTIES LINKER_LANGUAGE CXX)
+install(TARGETS ${PLATFORM_TARGET} DESTINATION platform)

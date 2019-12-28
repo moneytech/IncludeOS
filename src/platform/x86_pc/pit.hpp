@@ -1,26 +1,10 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef X86_PIT_HPP
 #define X86_PIT_HPP
 #include <delegate>
 #include <chrono>
-#include <hertz>
+#include <util/units.hpp>
 
 namespace x86
 {
@@ -28,6 +12,9 @@ namespace x86
    * Programmable Interval Timer
    *
   **/
+
+  using namespace util::literals;
+
   class PIT {
   public:
     using timeout_handler = delegate<void()>;
@@ -59,6 +46,9 @@ namespace x86
         @Note This is an asynchronous function.  */
     static double estimate_CPU_frequency();
 
+    /** Halt until PIT interrupt is triggered (one PIT cycle) **/
+    static void blocking_cycles(int cnt);
+
     /** Get the (single) instance. */
     static PIT& get() {
       static PIT instance_;
@@ -81,14 +71,13 @@ namespace x86
     void irq_handler();
 
     // State-keeping
-    uint16_t current_freq_divider_;
-    Mode     current_mode_;
-    int64_t  IRQ_counter;
+    uint16_t current_freq_divider_ = 0;
+    Mode     current_mode_ = NONE;
 
     // Timer handler & expiration timestamp
-    timeout_handler           handler;
-    timeout_handler           forev_handler;
-    std::chrono::milliseconds expiration;
+    timeout_handler          handler = nullptr;
+    timeout_handler          forev_handler = nullptr;
+    std::chrono::nanoseconds expiration;
 
     // Access mode bits are bits 4- and 5 in the Mode register
     enum AccessMode { LATCH_COUNT = 0x0, LO_ONLY=0x10, HI_ONLY=0x20, LO_HI=0x30 };

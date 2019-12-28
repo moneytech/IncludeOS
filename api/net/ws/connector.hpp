@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_HTTP_WS_CONNECTOR_HPP
@@ -82,7 +66,7 @@ public:
     if (on_accept_)
     {
       const bool accepted = on_accept_(writer->connection().peer(),
-                                     req->header().value("Origin").to_string());
+                                     std::string(req->header().value("Origin")));
       if (not accepted)
       {
         writer->write_header(http::Unauthorized);
@@ -91,10 +75,9 @@ public:
       }
     }
     auto ws = WebSocket::upgrade(*req, *writer);
+    if (ws == nullptr) return;
 
-    if(ws == nullptr) {
-    } // not ok
-
+    assert(ws->get_cpuid() == SMP::cpu_id());
     on_connect_(std::move(ws));
   }
 

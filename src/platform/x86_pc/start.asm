@@ -1,19 +1,3 @@
-;; This file is a part of the IncludeOS unikernel - www.includeos.org
-;;
-;; Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-;; and Alfred Bratterud
-;;
-;; Licensed under the Apache License, Version 2.0 (the "License");
-;; you may not use this file except in compliance with the License.
-;; You may obtain a copy of the License at
-;;
-;;     http:;;www.apache.org/licenses/LICENSE-2.0
-;;
-;; Unless required by applicable law or agreed to in writing, software
-;; distributed under the License is distributed on an "AS IS" BASIS,
-;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-;; See the License for the specific language governing permissions and
-;; limitations under the License.
 
 USE32
 extern __arch_start
@@ -27,10 +11,15 @@ global __avx_enabled
 %define  MB_MAGIC   0x1BADB002
 %define  MB_FLAGS   0x3  ;; ALIGN + MEMINFO
 
+;; stack base address at EBDA border
+;; NOTE: Multiboot can use 9d400 to 9ffff
+%define  STACK_LOCATION     0x9D3F0
+
 extern _MULTIBOOT_START_
 extern _LOAD_START_
 extern _LOAD_END_
 extern _end
+extern fast_kernel_start
 
 ALIGN 4
 section .multiboot
@@ -42,6 +31,9 @@ section .multiboot
   dd _LOAD_END_
   dd _end
   dd _start
+  ;; used for faster live updates
+  dd 0xFEE1DEAD
+  dd fast_kernel_start
 
 %define data_segment 0x10
 %define code_segment 0x08
@@ -73,10 +65,11 @@ rock_bottom:
   mov ds, cx
   mov es, cx
   mov fs, cx
+  mov cx, 0x18 ;; GS segment
   mov gs, cx
 
-  ;; Set up stack.
-  mov esp, 0xA0000
+  ;; 32-bit stack ptr
+  mov esp, STACK_LOCATION
   mov ebp, esp
 
   ;; enable SSE before we enter C/C++ land
@@ -185,6 +178,12 @@ gdt32:
   dw 0x0000          ;Base 15:00
   db 0x00            ;Base 23:16
   dw 0xcf92          ;Flags / Limit / Type [F,L,F,Type]
+  db 0x00            ;Base 32:24
+  ;; Entry 0x18: GS Data segment
+  dw 0x0100          ;Limit
+  dw 0x1000          ;Base 15:00
+  db 0x00            ;Base 23:16
+  dw 0x4092          ;Flags / Limit / Type [F,L,F,Type]
   db 0x00            ;Base 32:24
 gdt32_end:
 

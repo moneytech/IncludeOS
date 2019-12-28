@@ -1,22 +1,8 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
 //1 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #define OS_TERMINATE_ON_CONTRACT_VIOLATION
 #include <os>
+#include <hal/machine.hpp>
 
 #include <fs/disk.hpp>
 std::shared_ptr<fs::Disk> disk;
@@ -28,7 +14,7 @@ void list_partitions(decltype(disk));
 void Service::start(const std::string&)
 {
   // instantiate memdisk with FAT filesystem
-  auto& device = hw::Devices::drive(0);
+  auto& device = os::machine().get<hw::Block_device>(0);
   disk = std::make_shared<fs::Disk> (device);
   // assert that we have a disk
   CHECKSERT(disk, "Disk created");
@@ -44,7 +30,7 @@ void Service::start(const std::string&)
   {
     if (err) {
       printf("Could not mount filesystem\n");
-      panic("init_fs() failed");
+      os::panic("init_fs() failed");
     }
     CHECKSERT (not err, "Was able to mount filesystem");
 
@@ -53,12 +39,12 @@ void Service::start(const std::string&)
     [] (fs::error_t err, auto ents) {
       if (err) {
         printf("Could not list '/' directory\n");
-        panic("ls() failed");
+        os::panic("ls() failed");
       }
 
       // go through directory entries
       for (auto& e : *ents) {
-        printf("%s: %s\t of size %llu bytes (CL: %llu)\n",
+        printf("%s: %s\t of size %lu bytes (CL: %lu)\n",
                e.type_string().c_str(), e.name().c_str(), e.size(), e.block());
 
         if (e.is_file()) {
@@ -68,14 +54,14 @@ void Service::start(const std::string&)
             0,
             e.size(),
             [e_name = e.name()]
-            (fs::error_t err, fs::buffer_t buffer, size_t len)
+            (fs::error_t err, fs::buffer_t buffer)
             {
               if (err) {
                 printf("Failed to read %s!\n", e_name.c_str());
-                panic("read() failed");
+                os::panic("read() failed");
               }
 
-              std::string contents((const char*) buffer.get(), len);
+              std::string contents((const char*) buffer->data(), buffer->size());
               printf("[%s contents]:\n%s\nEOF\n\n",
                      e_name.c_str(), contents.c_str());
               // ---

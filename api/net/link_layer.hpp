@@ -1,5 +1,4 @@
 
-
 #pragma once
 #ifndef NET_LINK_LAYER_HPP
 #define NET_LINK_LAYER_HPP
@@ -8,6 +7,8 @@
 
 namespace net {
 
+extern void set_last_packet(net::Packet*);
+
 template <class T>
 class Link_layer : public hw::Nic {
 public:
@@ -15,7 +16,7 @@ public:
   using upstream    = hw::Nic::upstream;
   using downstream_link  = hw::Nic::downstream;
 public:
-  explicit Link_layer(Protocol&& protocol, uint32_t bufstore_sz, uint16_t bufsz);
+  explicit Link_layer(Protocol&& protocol);
 
   std::string device_name() const override {
     return link_.link_name();
@@ -24,21 +25,29 @@ public:
   downstream_link create_link_downstream() override
   { return {link_, &Protocol::transmit}; }
 
-  void set_ip4_upstream(upstream handler) override
+  net::upstream_ip& ip4_upstream() override
+  { return link_.ip4_upstream(); }
+
+  net::upstream_ip& ip6_upstream() override
+  { return link_.ip6_upstream(); }
+
+  upstream& arp_upstream() override
+  { return link_.arp_upstream(); }
+
+  void set_ip4_upstream(upstream_ip handler) override
   { link_.set_ip4_upstream(handler); }
 
-  void set_ip6_upstream(upstream handler) override
+  void set_ip6_upstream(upstream_ip handler) override
   { link_.set_ip6_upstream(handler); }
 
   void set_arp_upstream(upstream handler) override
   { link_.set_arp_upstream(handler); }
 
-  /** Number of bytes in a frame needed by the device itself **/
-  virtual size_t frame_offset_device() override
-  { return 0; }
+  void set_vlan_upstream(upstream handler) override
+  { link_.set_vlan_upstream(handler); }
 
   /** Number of bytes in a frame needed by the linklayer **/
-  virtual size_t frame_offset_link() override
+  size_t frame_offset_link() const noexcept override
   { return Protocol::header_size(); }
 
   hw::Nic::Proto proto() const override
@@ -58,15 +67,18 @@ public:
 protected:
   /** Called by the underlying physical driver inheriting the Link_layer */
   void receive(net::Packet_ptr pkt)
-  { link_.receive(std::move(pkt)); }
+  {
+    set_last_packet(pkt.get());
+    link_.receive(std::move(pkt));
+  }
 
 private:
   Protocol link_;
 };
 
 template <class Protocol>
-Link_layer<Protocol>::Link_layer(Protocol&& protocol, uint32_t bufstore_packets, uint16_t bufsz)
-  : hw::Nic(bufstore_packets, bufsz),
+Link_layer<Protocol>::Link_layer(Protocol&& protocol)
+  : hw::Nic(),
     link_{std::forward<Protocol>(protocol)}
 {
 }

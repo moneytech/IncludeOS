@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 #pragma once
 
 #ifndef UTIL_TIMER_HPP
@@ -45,8 +29,16 @@ public:
    */
   Timer(handler_t on_timeout)
     : id_{Timers::UNUSED_ID},
-      on_timeout_{on_timeout}
-  {}
+      on_timeout_{on_timeout}  {}
+
+  /** Move constructor, which stops the other timer and takes over **/
+  Timer(Timer&& other)
+    : id_{other.id_},
+      on_timeout_{std::move(other.on_timeout_)}
+  {
+    // the other timer is now "stopped"
+    other.id_ = Timers::UNUSED_ID;
+  }
 
   /**
    * @brief Start the timer with a timeout duration
@@ -104,7 +96,6 @@ public:
 
   /** Delete copy and move */
   Timer(const Timer&)             = delete;
-  Timer(Timer&&)                  = delete;
   Timer& operator=(const Timer&)  = delete;
   Timer& operator=(Timer&&)       = delete;
 

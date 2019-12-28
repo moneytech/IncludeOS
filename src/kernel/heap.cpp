@@ -1,71 +1,58 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-#include <kernel/os.hpp>
+#include <os.hpp>
+#include <util/bitops.hpp>
+#include <util/units.hpp>
+#include <kernel.hpp>
 
-struct mallinfo {
-  int arena;    /* total space allocated from system */
-  int ordblks;  /* number of non-inuse chunks */
-  int smblks;   /* unused -- always zero */
-  int hblks;    /* number of mmapped regions */
-  int hblkhd;   /* total space in mmapped regions */
-  int usmblks;  /* unused -- always zero */
-  int fsmblks;  /* unused -- always zero */
-  int uordblks; /* total allocated space */
-  int fordblks; /* total non-inuse space */
-  int keepcost; /* top-most, releasable (via malloc_trim) space */
-};
-extern "C" struct mallinfo mallinfo();
-extern "C" void malloc_trim(size_t);
-extern uintptr_t heap_begin;
-extern uintptr_t heap_end;
+using namespace util::literals;
 
-uintptr_t OS::heap_usage() noexcept
+size_t brk_bytes_used();
+size_t mmap_bytes_used();
+size_t mmap_allocation_end();
+
+
+
+size_t kernel::heap_usage() noexcept
 {
-  struct mallinfo info = mallinfo();
-  return info.uordblks;
+  return brk_bytes_used() + mmap_bytes_used();
 }
 
-void OS::heap_trim() noexcept
+size_t kernel::heap_avail() noexcept
 {
-  malloc_trim(0);
+  return (heap_max() - heap_begin()) - heap_usage();
 }
 
-uintptr_t OS::heap_max() noexcept
+uintptr_t kernel::heap_end() noexcept
 {
-  return OS::heap_max_;
+  return mmap_allocation_end();
 }
 
-uintptr_t OS::heap_begin() noexcept
-{
-  return ::heap_begin;
-}
-uintptr_t OS::heap_end() noexcept
-{
-  return ::heap_end;
+size_t os::total_memuse() noexcept {
+  return kernel::heap_usage() + kernel::state().liveupdate_size + kernel::heap_begin();
 }
 
-uintptr_t OS::resize_heap(size_t size)
-{
-  uintptr_t new_end = heap_begin() + size;
-  if (not size or size < heap_usage() or new_end > memory_end())
-    return heap_max() - heap_begin();
+constexpr size_t heap_alignment = 4096;
+__attribute__((weak)) ssize_t __brk_max = 0x100000;
 
-  memory_map().resize(heap_begin(), size);
-  heap_max_ = heap_begin() + size;
-  return size;
+static bool __heap_ready = false;
+
+extern void init_mmap(uintptr_t mmap_begin);
+
+
+uintptr_t __init_brk(uintptr_t begin, size_t size);
+uintptr_t __init_mmap(uintptr_t begin, size_t size);
+
+bool kernel::heap_ready() { return __heap_ready; }
+bool os::mem::heap_ready() { return kernel::heap_ready(); }
+
+void kernel::init_heap(uintptr_t free_mem_begin, uintptr_t memory_end) noexcept {
+  // NOTE: Initialize the heap before exceptions
+  // cache-align heap, because its not aligned
+  kernel::state().memory_end = memory_end;
+  kernel::state().heap_max   = memory_end - 1;
+  kernel::state().heap_begin = util::bits::roundto<heap_alignment>(free_mem_begin);
+  auto brk_end  = __init_brk(kernel::heap_begin(), __brk_max);
+  Expects(brk_end <= memory_end);
+  __init_mmap(brk_end, memory_end);
+  __heap_ready = true;
 }

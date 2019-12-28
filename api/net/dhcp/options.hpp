@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_DHCP_OPTIONS_HPP
@@ -215,7 +199,7 @@ struct domain_name_servers : public type<DOMAIN_NAME_SERVERS>, public addr_optio
  */
 struct domain_name : public type<DOMAIN_NAME>, public base
 {
-  constexpr domain_name(const std::string& dname) noexcept
+  domain_name(const std::string& dname) noexcept
     : base{type::CODE, static_cast<uint8_t>(dname.size())}
   {
     std::memcpy(&val[0], dname.data(), dname.size());
@@ -296,7 +280,7 @@ struct server_identifier : public type<DHCP_SERVER_IDENTIFIER>, public addr_opti
  */
 struct param_req_list : public type<DHCP_PARAMETER_REQUEST_LIST>, public base
 {
-  constexpr param_req_list(const std::vector<Code>& codes) noexcept
+  param_req_list(const std::vector<Code>& codes) noexcept
     : base{DHCP_PARAMETER_REQUEST_LIST, static_cast<uint8_t>(codes.size())}
   {
     Expects(codes.size() < 50); // or something
@@ -309,7 +293,7 @@ struct param_req_list : public type<DHCP_PARAMETER_REQUEST_LIST>, public base
  */
 struct message : public type<DHCP_MESSAGE>, public base
 {
-  constexpr message(const std::string& msg) noexcept
+  message(const std::string& msg) noexcept
     : base{CODE, static_cast<uint8_t>(msg.size())}
   {
     Expects(not msg.empty() and msg.size() <= 128); // or something

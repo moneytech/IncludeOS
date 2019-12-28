@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <hw/nic.hpp>
 
@@ -39,27 +23,40 @@ public:
   { return mac_; }
 
   virtual uint16_t MTU() const noexcept override
-  { return 1500; }
-
+  { return this->mtu; }
 
   downstream create_link_downstream() override
   { return transmit_to_link_; };
 
-  void set_ip4_upstream(upstream handler) override
-  { ip4_handler_ = handler; }
+  net::downstream create_physical_downstream() override
+  { return transmit_to_physical_; }
 
-  void set_ip6_upstream(upstream handler) override
-  { ip6_handler_ = handler; }
+  net::upstream_ip& ip4_upstream() override {
+    return ip4_handler_;
+  }
+  void set_ip4_upstream(net::upstream_ip handler) override {
+    ip4_handler_ = handler;
+  }
 
-  void set_arp_upstream(upstream handler) override
-  { arp_handler_ = handler; }
+  net::upstream_ip& ip6_upstream() override {
+    return ip6_handler_;
+  }
+  void set_ip6_upstream(net::upstream_ip handler) override {
+    ip6_handler_ = handler;
+  }
 
-  /** Number of bytes in a frame needed by the device itself **/
-  size_t frame_offset_device() override
-  { return frame_offs_dev_; }
+  net::upstream& arp_upstream() override {
+    return arp_handler_;
+  }
+  void set_arp_upstream(upstream handler) override {
+    arp_handler_ = handler;
+  }
+
+  void set_vlan_upstream(upstream handler) override
+  { vlan_handler_ = handler; }
 
   /** Number of bytes in a frame needed by the link layer **/
-  size_t frame_offset_link() override
+  size_t frame_offset_link() const noexcept override
   { return frame_offs_link_; }
 
   static constexpr uint16_t packet_len()
@@ -67,13 +64,12 @@ public:
 
   net::Packet_ptr create_packet(int) override
   {
-    auto buffer = bufstore().get_buffer();
-    auto* ptr = (net::Packet*) buffer.addr;
+    auto* ptr = (net::Packet*) bufstore_.get_buffer();
 
-    new (ptr) net::Packet(frame_offs_dev_ + frame_offs_link_,
+    new (ptr) net::Packet(frame_offs_link_,
                           0,
-                          frame_offs_dev_ + packet_len(),
-                          buffer.bufstore);
+                          packet_len(),
+                          &bufstore_);
 
     return net::Packet_ptr(ptr);
   }
@@ -102,16 +98,22 @@ public:
   //
 
   ~Nic_mock() {}
-  Nic_mock() : Nic(256, 2048) {}
+  Nic_mock() : Nic(), bufstore_{256u, 2048} {
+    this->mtu = MTU_detection_override(0, 1500);
+  }
 
   // Public data members (ahem)
   MAC::Addr mac_ = {0xc0,0x00,0x01,0x70,0x00,0x01};
-  static constexpr size_t frame_offs_dev_ = 0;
   static constexpr size_t frame_offs_link_ = 14;
 
   std::vector<net::Packet_ptr> tx_queue_;
 
-  void transmit(net::Packet_ptr, MAC::Addr, net::Ethertype)
+  void transmit_link(net::Packet_ptr pkt, MAC::Addr, net::Ethertype)
+  {
+    transmit_to_physical_(std::move(pkt));
+  }
+
+  void transmit(net::Packet_ptr pkt)
   {
     NIC_INFO("transimtting packet");
     //tx_queue_.emplace_back(std::move(ptr));
@@ -121,25 +123,28 @@ public:
 
     if(ip4_handler_) {
       NIC_INFO("pushing packet to IP4");
-      ip4_handler_(std::move(ptr));
+      ip4_handler_(std::move(ptr), false);
     } else {
       NIC_INFO("nowhere to push packet. Drop.");
     }
   }
 
-private:
+  void flush() override {}
+  void poll() override {}
 
-  upstream ip4_handler_ = nullptr;
-  upstream ip6_handler_ = nullptr;
+private:
+  net::BufferStore bufstore_;
+  net::upstream_ip ip4_handler_ = nullptr;
+  net::upstream_ip ip6_handler_ = nullptr;
   upstream arp_handler_ = nullptr;
-  downstream transmit_to_link_ = downstream{this, &Nic_mock::transmit};
-  bool link_up_ = true;
+  upstream vlan_handler_ = nullptr;
+  downstream transmit_to_link_ = downstream{this, &Nic_mock::transmit_link};
+  net::downstream transmit_to_physical_{this, &Nic_mock::transmit};
+  bool     link_up_ = true;
+  uint16_t mtu;
   uint64_t packets_rx_ = 0;
   uint64_t packets_tx_ = 0;
   uint64_t packets_dropped_ = 0;
-
-
 };
-
 
 #endif

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_TCP_CONNECTION_STATES_HPP
@@ -53,7 +37,7 @@ public:
 
     => SynSent
   */
-  Result handle(Connection&, Packet_ptr in) override;
+  Result handle(Connection&, Packet_view& in) override;
 
   bool is_closed() const override {
     return true;
@@ -87,7 +71,7 @@ public:
 
     => SynReceived.
   */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "LISTENING";
@@ -116,7 +100,7 @@ public:
 
     => Established.
   */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "SYN-SENT";
@@ -151,7 +135,7 @@ public:
 
     => Established.
   */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "SYN-RCV";
@@ -173,13 +157,11 @@ public:
 
   virtual size_t send(Connection&, WriteBuffer&) override;
 
-  virtual void receive(Connection&, ReadBuffer&&) override;
-
   virtual void close(Connection&) override;
 
   virtual void abort(Connection&) override;
 
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "ESTABLISHED";
@@ -211,8 +193,6 @@ public:
     return instance;
   }
 
-  virtual void receive(Connection&, ReadBuffer&&) override;
-
   virtual void close(Connection&) override;
 
   virtual void abort(Connection&) override;
@@ -222,7 +202,7 @@ public:
 
     => FinWait2.
   */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "FIN-WAIT-1";
@@ -250,15 +230,13 @@ public:
     return instance;
   }
 
-  virtual void receive(Connection&, ReadBuffer&&) override;
-
   virtual void close(Connection&) override;
 
   virtual void abort(Connection&) override;
   /*
 
    */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "FIN-WAIT-2";
@@ -288,8 +266,6 @@ public:
 
   virtual size_t send(Connection&, WriteBuffer&) override;
 
-  virtual void receive(Connection&, ReadBuffer&&) override;
-
   virtual void close(Connection&) override;
 
   virtual void abort(Connection&) override;
@@ -300,7 +276,7 @@ public:
 
     => LastAck
   */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "CLOSE-WAIT";
@@ -328,7 +304,7 @@ public:
 
     => TimeWait (Guess this isnt needed, just start a Close-timer)
   */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   inline virtual std::string to_string() const override {
     return "CLOSING";
@@ -358,13 +334,17 @@ public:
 
     => Closed (Tell TCP to remove this connection)
   */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
-  inline virtual std::string to_string() const override {
+  std::string to_string() const override {
     return "LAST-ACK";
   };
 
-  inline virtual bool is_closing() const override {
+  bool is_closing() const override {
+    return true;
+  }
+
+  bool is_closed() const override {
     return true;
   }
 
@@ -384,7 +364,7 @@ public:
   /*
 
    */
-  virtual Result handle(Connection&, Packet_ptr in) override;
+  virtual Result handle(Connection&, Packet_view& in) override;
 
   std::string to_string() const override {
     return "TIME-WAIT";

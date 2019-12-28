@@ -1,145 +1,182 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include "acpi.hpp"
 #include "apic.hpp"
 #include "apic_timer.hpp"
-#include "gdt.hpp"
-#include "pit.hpp"
+#include "clocks.hpp"
+#include "idt.hpp"
+#include "smbios.hpp"
 #include "smp.hpp"
-#include <kernel/irq_manager.hpp>
-#include <kernel/pci_manager.hpp>
-#include <kernel/os.hpp>
-#include <hw/devices.hpp>
+#include <arch/x86/gdt.hpp>
+#include <kernel/events.hpp>
+#include <hw/pci_manager.hpp>
+#include <kernel.hpp>
+#include <os.hpp>
 #include <info>
+//#define ENABLE_PROFILERS
+#include <profile>
 #define MYINFO(X,...) INFO("x86", X, ##__VA_ARGS__)
 
-extern "C" uint16_t _cpu_sampling_freq_divider_;
+extern "C" char* get_cpu_esp();
+extern "C" void* get_cpu_ebp();
 
-using namespace x86;
+struct alignas(64) smp_table
+{
+  // per-cpu cpuid
+  int cpuid;
+  /** put more here **/
+};
+static SMP::Array<smp_table> cpu_tables;
 
 namespace x86 {
-  static void initialize_cpu_shared();
+  void initialize_cpu_tables_for_cpu(int cpu);
+  void register_deactivation_function(delegate<void()>);
 }
 
 void __platform_init()
 {
   // read ACPI tables
-  ACPI::init();
-  // create CPU storage struct
-  initialize_cpu_shared();
+  {
+    PROFILE("ACPI init");
+    x86::ACPI::init();
+  }
 
-  // setup APIC, APIC timer, SMP etc.
-  APIC::init();
+  // read SMBIOS tables
+  {
+    PROFILE("SMBIOS init");
+    x86::SMBIOS::init();
+  }
 
   // enable fs/gs for local APIC
-  initialize_gdt_for_cpu(APIC::get().get_id());
-
-  // IDT manager: Interrupt and exception handlers
-  IRQ_manager::init();
-
-  // initialize and start registered APs found in ACPI-tables
-#ifndef INCLUDEOS_SINGLE_THREADED
-  x86::SMP::init();
+  INFO("x86", "Setting up GDT, TLS, IST");
+  //initialize_gdt_for_cpu(0);
+#ifdef ARCH_x86_64
+  // setup Interrupt Stack Table
+  {
+    PROFILE("IST amd64");
+    x86::ist_initialize_for_cpu(0, 0x9D3F0);
+  }
 #endif
+
+  INFO("x86", "Initializing CPU 0");
+  {
+    PROFILE("CPU tables x86");
+    x86::initialize_cpu_tables_for_cpu(0);
+  }
+
+  {
+    PROFILE("Events init");
+    Events::get(0).init_local();
+  }
+
+  // setup APIC, APIC timer, SMP etc.
+  {
+    PROFILE("APIC init");
+    x86::APIC::init();
+  }
 
   // enable interrupts
   MYINFO("Enabling interrupts");
-  IRQ_manager::enable_interrupts();
-
-  // Estimate CPU frequency
-  MYINFO("Estimating CPU-frequency");
-  INFO2("|");
-  INFO2("+--(%d samples, %f sec. interval)", 18,
-        (x86::PIT::FREQUENCY / _cpu_sampling_freq_divider_).count());
-  INFO2("|");
-
-  if (OS::cpu_freq().count() <= 0.0) {
-    OS::cpu_mhz_ = MHz(PIT::get().estimate_CPU_frequency());
+  {
+    PROFILE("Enable interrupts");
+    asm volatile("sti");
   }
-  INFO2("+--> %f MHz", OS::cpu_freq().count());
+
+  // initialize and start registered APs found in ACPI-tables
+#ifdef INCLUDEOS_SMP_ENABLE
+{
+  PROFILE("SMP init");
+  x86::init_SMP();
+}
+#endif
+
+  // Setup kernel clocks
+  MYINFO("Setting up kernel clock sources");
+  {
+    PROFILE("Clocks init (x86)");
+    x86::Clocks::init();
+  }
+
+  if (os::cpu_freq().count() <= 0.0) {
+    kernel::state().cpu_khz = x86::Clocks::get_khz();
+  }
+  INFO2("+--> %f MHz", os::cpu_freq().count() / 1000.0);
 
   // Note: CPU freq must be known before we can start timer system
   // Initialize APIC timers and timer systems
   // Deferred call to Service::ready() when calibration is complete
-  APIC_Timer::calibrate();
+  {
+    PROFILE("APIC timer calibrate");
+    x86::APIC_Timer::calibrate();
+  }
 
-  // Initialize PCI devices
-  PCI_manager::init();
+  INFO2("Initializing drivers");
+  {
+    PROFILE("Initialize drivers");
+    extern kernel::ctor_t __driver_ctors_start;
+    extern kernel::ctor_t __driver_ctors_end;
+    kernel::run_ctors(&__driver_ctors_start, &__driver_ctors_end);
+  }
+
+  // Scan PCI buses
+  {
+    PROFILE("PCI bus scan");
+    hw::PCI_manager::init();
+  }
+  {
+	PROFILE("PCI device init")
+    // Initialize storage devices
+    hw::PCI_manager::init_devices(PCI::STORAGE);
+    kernel::state().block_drivers_ready = true;
+    // Initialize network devices
+    hw::PCI_manager::init_devices(PCI::NIC);
+  }
 
   // Print registered devices
-  hw::Devices::print_devices();
+  os::machine().print_devices();
+}
+
+#ifdef ARCH_i686
+static x86::GDT gdt;
+#endif
+
+void x86::initialize_cpu_tables_for_cpu(int cpu)
+{
+  cpu_tables[cpu].cpuid = cpu;
+
+#ifdef ARCH_x86_64
+  x86::CPU::set_gs(&cpu_tables[cpu]);
+#else
+  int fs = gdt.create_data(&cpu_tables[cpu], 1);
+  GDT::reload_gdt(gdt);
+  GDT::set_fs(fs);
+#endif
+}
+
+static std::vector<delegate<void()>> deactivate_funcs;
+void x86::register_deactivation_function(delegate<void()> func) {
+  deactivate_funcs.push_back(std::move(func));
+}
+void __arch_system_deactivate()
+{
+  for (auto& func : deactivate_funcs) func();
 }
 
 void __arch_enable_legacy_irq(uint8_t irq)
 {
-  APIC::enable_irq(irq);
+  x86::APIC::enable_irq(irq);
 }
 void __arch_disable_legacy_irq(uint8_t irq)
 {
-  APIC::disable_irq(irq);
+  x86::APIC::disable_irq(irq);
 }
 
 void __arch_poweroff()
 {
-  ACPI::shutdown();
+  x86::ACPI::shutdown();
   __builtin_unreachable();
 }
 void __arch_reboot()
 {
-  ACPI::reboot();
+  x86::ACPI::reboot();
   __builtin_unreachable();
 }
-
-namespace x86
-{
-  struct alignas(SMP_ALIGN) cpu_shared
-  {
-    int cpduid;
-  };
-  static std::array<cpu_shared, SMP_MAX_CORES> cpudata; // for alignment
-
-  static void initialize_cpu_shared()
-  {
-    for (size_t id = 0; id < cpudata.size(); id++) {
-      cpudata[id].cpduid = id;
-    }
-  }
-
-  struct alignas(SMP_ALIGN) segtable
-  {
-    struct GDT gdt;
-  };
-  static std::array<segtable, SMP_MAX_CORES> gdtables;
-
-  void initialize_gdt_for_cpu(int id)
-  {
-  #ifdef ARCH_x86_64
-    GDT::set_fs(&cpudata.at(id));
-  #else
-    // initialize GDT for this core
-    gdtables.at(id).gdt.initialize();
-    // create PER-CPU segment
-    int fs = gdtables[id].gdt.create_data(&cpudata.at(id), 1);
-    // load GDT and refresh segments
-    GDT::reload_gdt(gdtables[id].gdt);
-    // enable per-cpu for this core
-    cpudata[id].cpduid = id;
-    GDT::set_fs(fs);
-  #endif
-  }
-} // x86

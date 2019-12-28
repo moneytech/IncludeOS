@@ -1,24 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef HW_MAC_ADDR_HPP
 #define HW_MAC_ADDR_HPP
 
+#include <common>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -32,9 +17,16 @@ namespace MAC {
  */
 union Addr {
   /**
-   * Default constructor
+   * Zero-initialized default constructor
    */
   constexpr Addr() noexcept : part{} {}
+
+  /**
+   * Constructor
+   *
+   * Create a MAC address object by copying another
+   */
+  Addr(const Addr& other) = default;
 
   /**
    * Constructor
@@ -63,6 +55,40 @@ union Addr {
                  const uint8_t d, const uint8_t e, const uint8_t f) noexcept
     : part{a,b,c,d,e,f}
   {}
+
+  static uint8_t dehex(char c)
+  {
+    if (c >= '0' && c <= '9')
+        return (c - '0');
+    else if (c >= 'a' && c <= 'f')
+        return 10 + (c - 'a');
+    else if (c >= 'A' && c <= 'F')
+        return 10 + (c - 'A');
+    else
+        return 0;
+  }
+
+  Addr(const std::string& smac) noexcept
+    : Addr(smac.c_str())
+  {}
+
+  Addr(const char *smac) noexcept
+  {
+    uint8_t macaddr[PARTS_LEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    for (size_t i = 0; i < PARTS_LEN; i++) {
+        macaddr[i] = dehex(*smac++) << 4;
+        macaddr[i] |= dehex(*smac++);
+        smac++;
+    }
+    memcpy(part, macaddr, PARTS_LEN);
+  }
+
+  Addr(uint8_t *addr) noexcept
+  {
+      if (addr) {
+        memcpy(part, addr, PARTS_LEN);
+      }
+  }
 
   /**
    * Assignment operator
@@ -145,9 +171,63 @@ union Addr {
   constexpr bool operator!=(const Addr other) const noexcept
   { return not (*this == other); }
 
+  constexpr uint8_t operator[](uint8_t n) const noexcept
+  {
+      Expects(n < 6);
+      return part[n];
+  }
+
+  /**
+   * @brief      Construct a EUI (Extended Unique Identifier)
+   *             from a 48-bit MAC addr
+   *
+   * @param[in]  addr  The address
+   *
+   * @return     A 64-bit EUI
+   */
+  static constexpr uint64_t eui64(const Addr& addr) noexcept
+  {
+    std::array<uint8_t, 8> eui {
+      addr.part[0], addr.part[1], addr.part[2],
+      0xFF, 0xFE,
+      addr.part[3], addr.part[4], addr.part[5]
+    };
+    eui[0] ^= (1UL << 1);
+    return *((uint64_t*)eui.data());
+  }
+
+  /**
+   * @brief      Construct a EUI (Extended Unique Identifier)
+   *             from this MAC addr
+   *
+   * @return     A 64-bit EUI
+   */
+  constexpr uint64_t eui64() const noexcept
+  { return Addr::eui64(*this); }
+
+  /**
+   * @brief      Construct a broadcast/"multicast" MAC for
+   *             the given IPv6 address.
+   *
+   * @param[in]  v6    The IPv6 address
+   *
+   * @tparam     IPv6  IPv6 address
+   *
+   * @return     A broadcast/"multicast" MAC address
+   */
+  template <typename IPv6>
+  static Addr ipv6_mcast(const IPv6& v6)
+  {
+    return { 0x33, 0x33,
+      v6.template get_part<uint8_t>(12),
+      v6.template get_part<uint8_t>(13),
+      v6.template get_part<uint8_t>(14),
+      v6.template get_part<uint8_t>(15)};
+  }
+
 
   static constexpr const size_t PARTS_LEN {6}; //< Number of parts in a MAC address
-  uint8_t part[PARTS_LEN];                     //< The parts of the MAC address
+  uint8_t part[PARTS_LEN] = {0};               //< The parts of the MAC address
 
   struct {
     uint16_t minor;

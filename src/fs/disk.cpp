@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <fs/disk.hpp>
 #include <fs/mbr.hpp>
@@ -32,9 +16,9 @@ namespace fs {
     device.read(
       0,
       hw::Block_device::on_read_func::make_packed(
-      [this, func] (hw::Block_device::buffer_t data)
+      [func] (hw::Block_device::buffer_t data)
       {
-        std::vector<Partition> parts;
+        std::vector<fs::Partition> parts;
 
         if (!data) {
           func({ error_t::E_IO, "Unable to read MBR"}, parts);
@@ -42,7 +26,7 @@ namespace fs {
         }
 
         // First sector is the Master Boot Record
-        auto* mbr =(MBR::mbr*) data.get();
+        auto* mbr =(MBR::mbr*) data->data();
 
         for (int i {0}; i < 4; ++i) {
           // all the partitions are offsets to potential Volume Boot Records
@@ -65,14 +49,14 @@ namespace fs {
       hw::Block_device::on_read_func::make_packed(
       [this, func] (hw::Block_device::buffer_t data)
       {
-        if (!data) {
+        if (UNLIKELY(!data)) {
           // TODO: error-case for unable to read MBR
-          func({ error_t::E_IO, "Unable to read MBR"}, fs());
+          func({ error_t::E_IO, "Unable to read MBR"}, *filesys);
           return;
         }
 
         // auto-detect FAT on MBR:
-        auto* mbr = (MBR::mbr*) data.get();
+        auto* mbr = (MBR::mbr*) data->data();
         MBR::BPB* bpb = mbr->bpb();
 
         if (bpb->bytes_per_sector >= 512
@@ -134,13 +118,13 @@ namespace fs {
         hw::Block_device::on_read_func::make_packed(
         [this, part, func] (hw::Block_device::buffer_t data)
         {
-          if (!data) {
+          if (UNLIKELY(!data)) {
             // TODO: error-case for unable to read MBR
-            func({ error_t::E_IO, "Could not read MBR" }, fs());
+            func({ error_t::E_IO, "Could not read MBR" }, *filesys);
             return;
           }
 
-          auto* mbr = (MBR::mbr*) data.get();
+          auto* mbr = (MBR::mbr*) data->data();
           auto pint = (int) part - 1;
 
           auto lba_base = mbr->part[pint].lba_begin;
@@ -155,7 +139,7 @@ namespace fs {
     }
   }
 
-  std::string Disk::Partition::name() const {
+  std::string Partition::name() const {
     return MBR::id_to_name(id);
   }
 

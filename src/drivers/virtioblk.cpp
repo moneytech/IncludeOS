@@ -1,8 +1,7 @@
-#define DEBUG
-#define DEBUG2
 #include "virtioblk.hpp"
 
-#include <kernel/irq_manager.hpp>
+#include <kernel/events.hpp>
+#include <fs/common.hpp>
 #include <hw/pci.hpp>
 #include <cassert>
 #include <stdlib.h>
@@ -36,7 +35,7 @@ void null_deleter(uint8_t*) {};
 VirtioBlk::VirtioBlk(hw::PCI_Device& d)
   : Virtio(d), hw::Block_device(), req(device_name() + ".req0", queue_size(0), 0, iobase()), inflight(0)
 {
-  INFO("VirtioBlk", "Block_devicer initializing");
+  INFO("VirtioBlk", "Initializing");
   {
     auto& reqs = Statman::get().create(
       Stat::UINT32, device_name() + ".requests");
@@ -80,7 +79,7 @@ VirtioBlk::VirtioBlk(hw::PCI_Device& d)
 
   // Step 3 - Fill receive queue with buffers
   // DEBUG: Disable
-  INFO("VirtioBlk", "Queue size: %i\tRequest size: %u\n",
+  INFO("VirtioBlk", "Queue size: %i\tRequest size: %zu\n",
        req.size(), sizeof(request_t));
 
   // Get device configuration
@@ -96,17 +95,17 @@ VirtioBlk::VirtioBlk(hw::PCI_Device& d)
     assert(get_msix_vectors() >= 2);
     auto& irqs = this->get_irqs();
     // update IRQ subscriptions
-    IRQ_manager::get().subscribe(irqs[0], {this, &VirtioBlk::service_RX});
-    IRQ_manager::get().subscribe(irqs[1], {this, &VirtioBlk::msix_conf_handler});
+    Events::get().subscribe(irqs[0], {this, &VirtioBlk::service_RX});
+    Events::get().subscribe(irqs[1], {this, &VirtioBlk::msix_conf_handler});
   }
   else
   {
     auto& irqs = this->get_irqs();
-    IRQ_manager::get().subscribe(irqs[0], {this, &VirtioBlk::irq_handler});
+    Events::get().subscribe(irqs[0], {this, &VirtioBlk::irq_handler});
   }
 
   // Done
-  INFO("VirtioBlk", "Block device with %llu sectors capacity", config.capacity);
+  INFO("VirtioBlk", "Block device with %zu sectors capacity", config.capacity);
 }
 
 void VirtioBlk::get_config()
@@ -144,10 +143,10 @@ void VirtioBlk::irq_handler() {
     get_config();
     //debug("\t             New status: 0x%x \n", config.status);
   }
-
 }
 
-void VirtioBlk::handle(request_t* hdr) {
+void VirtioBlk::handle(request_t* hdr)
+{
   // check request response
   blk_resp_t& resp = hdr->resp;
   // only call handler with data when the request was fullfilled
@@ -155,22 +154,20 @@ void VirtioBlk::handle(request_t* hdr) {
   //      resp.status, hdr->hdr.sector, resp.handler.get_ptr(), hdr->io.sector);
 
   if (resp.status == 0) {
-    // give the whole request to user:
     // packaged as buffer, but deleted as request
-    auto buf = buffer_t(hdr->io.sector, [] (uint8_t* buffer) {
-      delete (request_t*) (buffer -  sizeof(scsi_header_t));
-    });
-    // call handler with buffer only as size is implicit
-    resp.handler(buf);
+    resp.handler(hdr->io.sector);
   }
   else {
     // return empty shared ptr
-    resp.handler(buffer_t());
+    resp.handler(nullptr);
   }
+
+  // delete request
+  delete hdr;
 }
 
-void VirtioBlk::service_RX() {
-
+void VirtioBlk::service_RX()
+{
   req.disable_interrupts();
   while (req.new_incoming())
   {
@@ -217,23 +214,11 @@ void VirtioBlk::shipit(request_t* vbr) {
   (*this->requests)++;
 }
 
-void VirtioBlk::read (block_t blk, on_read_func func) {
-  // Virtio Std. § 5.1.6.3
-  auto* vbr = new request_t(blk, func);
-  if (free_space()) {
-    shipit(vbr);
-    req.kick();
-  }
-  else {
-    jobs.push_back(vbr);
-  }
-}
-void VirtioBlk::read (block_t blk, size_t cnt, on_read_func func) {
-
+void VirtioBlk::read (block_t blk, size_t cnt, on_read_func func)
+{
   // create big buffer for collecting all the disk data
-  uint8_t* bufdata = new uint8_t[block_size() * cnt];
-  buffer_t bigbuf { bufdata, std::default_delete<uint8_t[]>() };
-  // (initialized) boolean array of partial jobs
+  auto bigbuf = fs::construct_buffer(block_size() * cnt);
+  // number of reads left
   auto results = std::make_shared<size_t> (cnt);
   bool shipped = false;
   //printf("virtioblk: Enqueue blk %llu cnt %u\n", blk, cnt);
@@ -244,18 +229,18 @@ void VirtioBlk::read (block_t blk, size_t cnt, on_read_func func) {
     // create a special request where we collect all the data
     auto* vbr = new request_t(
       blk + i,
-      on_read_func::make_packed(
-      [this, i, func, results, bigbuf] (buffer_t buffer) {
+      request_handler_t::make_packed(
+      [this, i, func, results, bigbuf] (uint8_t* data) {
         // if the job was already completed, return early
         if (*results == 0) {
-          printf("Job cancelled? results == 0,  blk=%u\n", i);
+          printf("[virtioblk] Job cancelled? results == 0,  blk=%zu\n", i);
           return;
         }
         // validate partial result
-        if (buffer) {
+        if (data != nullptr) {
           *results -= 1;
           // copy partial block
-          memcpy(bigbuf.get() + i * block_size(), buffer.get(), block_size());
+          memcpy(bigbuf->data() + i * block_size(), data, block_size());
           // check if we have all blocks
           if (*results == 0) {
             // finally, call user-provided callback
@@ -267,7 +252,7 @@ void VirtioBlk::read (block_t blk, size_t cnt, on_read_func func) {
           // if the partial result failed, cancel all
           *results = 0;
           // callback with no data
-          func(buffer_t());
+          func(nullptr);
         }
       })
     );
@@ -284,7 +269,7 @@ void VirtioBlk::read (block_t blk, size_t cnt, on_read_func func) {
   if (shipped) req.kick();
 }
 
-VirtioBlk::request_t::request_t(uint64_t blk, on_read_func cb)
+VirtioBlk::request_t::request_t(uint64_t blk, request_handler_t cb)
 {
   hdr.type   = VIRTIO_BLK_T_IN;
   hdr.ioprio = 0; // reserved
@@ -298,16 +283,15 @@ void VirtioBlk::deactivate()
   /// disable interrupts on virtio queues
   req.disable_interrupts();
 
-  /// mask off MSI-X vectors
-  if (has_msix())
-      deactivate_msix();
+  /// reset device
+  this->Virtio::reset();
 }
 
-#include <kernel/pci_manager.hpp>
+#include <hw/pci_manager.hpp>
 
 /** Global constructor - register VirtioBlk's driver factory at the PCI_manager */
 struct Autoreg_virtioblk {
   Autoreg_virtioblk() {
-    PCI_manager::register_blk(PCI::VENDOR_VIRTIO, 0x1001, &VirtioBlk::new_instance);
+    hw::PCI_manager::register_blk(PCI::VENDOR_VIRTIO, 0x1001, &VirtioBlk::new_instance);
   }
 } autoreg_virtioblk;

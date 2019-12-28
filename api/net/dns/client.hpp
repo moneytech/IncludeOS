@@ -1,32 +1,21 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #ifndef NET_DNS_CLIENT_HPP
 #define NET_DNS_CLIENT_HPP
 
-#include <net/inet.hpp>
 #include <net/dns/dns.hpp>
-#include <net/ip4/udp.hpp>
+#include <net/ip4/ip4.hpp>
+#include <net/udp/socket.hpp>
 #include <util/timer.hpp>
 #include <map>
 #include <unordered_map>
+#include "query.hpp"
+#include "response.hpp"
 
 namespace net
 {
+  class Inet;
+}
+namespace net::dns {
   /**
    * @brief      A simple DNS client which is able to resolve hostnames
    *             and locally cache them.
@@ -34,12 +23,12 @@ namespace net
    * @note       A entry can stay longer than TTL due to flush timer granularity.
    *             Max_TTL = TTL + FLUSH_INTERVAL (90s default)
    */
-  class DNSClient
+  class Client
   {
   public:
-    using Stack           = IP4::Stack;
-    using Resolve_handler = Stack::resolve_func<IP4>;
-    using Address         = ip4::Addr;
+    using Stack           = Inet;
+    using Resolve_handler = delegate<void(dns::Response_ptr, const Error& err)>;
+    using Address         = net::Addr;
     using Hostname        = std::string;
     using timestamp_t     = RTC::timestamp_t;
     /**
@@ -51,8 +40,8 @@ namespace net
       Address     address;
       timestamp_t expires;
 
-      Cache_entry(const Address addr, const timestamp_t exp) noexcept
-        : address{addr}, expires{exp}
+      Cache_entry(Address addr, const timestamp_t exp) noexcept
+        : address{std::move(addr)}, expires{exp}
       {}
     };
     using Cache           = std::unordered_map<Hostname, Cache_entry>;
@@ -67,15 +56,7 @@ namespace net
      *
      * @param      stack   The stack
      */
-    DNSClient(Stack& stack)
-      : stack_{stack},
-        socket_(stack.udp().bind()),
-        cache_ttl_{DEFAULT_CACHE_TTL},
-        flush_timer_{{this, &DNSClient::flush_expired}}
-    {
-      // Parse received data on this socket as Responses
-      socket_.on_read({this, &DNSClient::receive_response});
-    }
+    Client(Stack& stack);
 
     /**
      * @brief      Resolve a hostname for an IP4 address with a timeout duration
@@ -92,7 +73,7 @@ namespace net
      * @param[in]  force       Wether to force the resolve, ignoring the cache
      */
     void resolve(Address            dns_server,
-                 const Hostname&    hostname,
+                 Hostname           hostname,
                  Resolve_handler    handler,
                  Timer::duration_t  timeout,
                  bool               force = false);
@@ -101,11 +82,11 @@ namespace net
      * @brief      Resolve a hostname with default timeout.
      */
     void resolve(Address            dns_server,
-                 const Hostname&    hostname,
+                 Hostname           hostname,
                  Resolve_handler    handler,
                  bool               force = false)
     {
-      resolve(dns_server, hostname, std::move(handler), DEFAULT_RESOLVE_TIMEOUT, force);
+      resolve(dns_server, std::move(hostname), std::move(handler), DEFAULT_RESOLVE_TIMEOUT, force);
     }
 
     /**
@@ -155,14 +136,8 @@ namespace net
     static bool is_FQDN(const std::string& hostname)
     { return hostname.find('.') != std::string::npos; }
 
-    ~DNSClient()
-    {
-      socket_.close();
-    }
-
   private:
     Stack&                stack_;
-    UDPSocket&            socket_;
     Cache                 cache_;
     std::chrono::seconds  cache_ttl_;
     Timer                 flush_timer_;
@@ -176,7 +151,7 @@ namespace net
      * @param[in]  data       The raw data containing the msg
      * @param[in]  <unnamed>  Size of the data
      */
-    void receive_response(IP4::addr, UDP::port_t, const char* data, size_t);
+    void receive_response(Address, udp::port_t, const char* data, size_t);
 
     /**
      * @brief      Adds a cache entry.
@@ -208,35 +183,40 @@ namespace net
      */
     struct Request
     {
-      DNS::Request request;
-      Resolve_handler callback;
-      Timer timer;
+      Client&      client;
 
-      Request(DNS::Request req, Resolve_handler cb,
-              Timer::duration_t timeout = DEFAULT_RESOLVE_TIMEOUT)
-        : request{std::move(req)},
-          callback{std::move(cb)},
-          timer({this, &Request::finish})
-      {
-        start_timeout(timeout);
-      }
+      dns::Query      query;
+      using Response_ptr = std::unique_ptr<dns::Response>;
+      Response_ptr    response;
+
+      udp::Socket&    socket;
+
+      Resolve_handler callback;
+      Timer           timer;
+
+      Request(Client& cli, udp::Socket& sock, dns::Query q, Resolve_handler cb);
+
+      void resolve(Address server, Timer::duration_t timeout);
+
+      ~Request();
+
+    private:
+
+      void parse_response(Addr, udp::port_t, const char* data, size_t len);
+
+      void handle_error(const Error& err);
 
       /**
        * @brief      Finish the request with a no error,
        *             invoking the resolve handler (callback)
        */
-      void finish()
-      {
-        Error err;
-        callback(request.getFirstIP4(), err);
-      }
+      void finish(const Error& err);
 
-      void start_timeout(Timer::duration_t timeout)
-      { timer.start(timeout); }
+      void timeout();
 
     }; // < struct Request
        //
-    using Requests = std::unordered_map<DNS::Request::id_t, Request>;
+    using Requests = std::unordered_map<dns::id_t, Request>;
     /** Pending requests (not yet resolved) */
     Requests requests_;
   };

@@ -1,22 +1,6 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <hw/serial.hpp>
-#include <kernel/irq_manager.hpp>
+#include <kernel/events.hpp>
 
 using namespace hw;
 
@@ -54,8 +38,8 @@ void Serial::on_data(on_data_handler del) {
   enable_interrupt();
   on_data_ = del;
   INFO("Serial", "Subscribing to data on IRQ %i",irq_);
-  IRQ_manager::get().subscribe(irq_, {this, &Serial::irq_handler_});
-  IRQ_manager::get().enable_irq(irq_);
+  Events::get().subscribe(irq_, {this, &Serial::irq_handler_});
+  __arch_enable_legacy_irq(irq_);
 }
 
 void Serial::on_readline(on_string_handler del, char delim) {

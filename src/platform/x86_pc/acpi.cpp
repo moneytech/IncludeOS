@@ -1,27 +1,12 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include "acpi.hpp"
-#include <kernel/syscalls.hpp>
+#include <os.hpp>
 #include <hw/ioport.hpp>
 #include <debug>
 #include <info>
 
 extern "C" void reboot_os();
+extern "C" void apm_shutdown();
 
 namespace x86 {
 
@@ -86,6 +71,8 @@ namespace x86 {
     uint32_t  PM1b_CNT_BLK;
     uint8_t   unneded4[89 - 72];
     uint8_t   PM1_CNT_LEN;
+    uint8_t   unneded5[18];
+    uint8_t   century;
   };
 
   struct AddressStructure
@@ -138,12 +125,12 @@ namespace x86 {
     // verify Root SDT
     if (rsdt->Length < sizeof(SDTHeader)) {
       printf("ACPI: SDT verification failed: len=%u\n", rsdt->Length);
-      panic("SDT had impossible length");
+      os::panic("SDT had impossible length");
     }
     if (checksum((char*) rsdt, rsdt->Length) != 0)
     {
       printf("ACPI: SDT verification failed!");
-      panic("SDT checksum failed");
+      os::panic("SDT checksum failed");
     }
 
     // walk through system description table headers
@@ -173,6 +160,13 @@ namespace x86 {
       // create SDT pointer from 32-bit address
       // NOTE: don't touch!
       auto* sdt = (SDTHeader*) (uintptr_t) (*(uint32_t*) addr);
+
+      addr += 4; total--;
+
+      // some entries seems to be null depending on hypervisor
+      if(sdt == nullptr)
+        continue;
+
       // find out which SDT it is
       switch (sdt->sigint()) {
       case APIC_t:
@@ -190,8 +184,6 @@ namespace x86 {
       default:
         debug("Signature: %.*s (u=%u)\n", 4, sdt->Signature, sdt->sigint());
       }
-
-      addr += 4; total--;
     }
     debug("Finished walking SDTs\n");
   }
@@ -229,7 +221,7 @@ namespace x86 {
               ioapic.id, ioapic.addr_base, ioapic.intr_base);
         }
         break;
-      case 2:
+      case 2: // interrupt source override
         {
           auto& redirect = *(override_t*) rec;
           overrides.push_back(redirect);
@@ -237,8 +229,16 @@ namespace x86 {
               redirect.bus_source, redirect.irq_source, redirect.global_intr);
         }
         break;
+      case 4: // non-maskable interrupts
+        {
+          auto& nmi = *(nmi_t*) rec;
+          nmis.push_back(nmi);
+          //INFO2("NMI for CPU %u (flags %x) on LINT %u",
+          //      nmi.cpu, nmi.flags, nmi.lint);
+          break;
+        }
       default:
-        debug("Unrecognized ACPI MADT type: %u\n", rec->type);
+        printf("Unrecognized ACPI MADT type: %u\n", rec->type);
       }
       // decrease length as we go
       len -= rec->length;
@@ -251,6 +251,8 @@ namespace x86 {
   void ACPI::walk_facp(const char* addr)
   {
     auto* facp = (FACPHeader*) addr;
+    this->century = facp->century;
+
     auto  dsdt_addr = (uintptr_t) facp->DSDT;
     // verify DSDT
     constexpr uint32_t DSDT_t = bake('D', 'S', 'D', 'T');
@@ -294,8 +296,8 @@ namespace x86 {
        ACPI_ENABLE = facp->ACPI_ENABLE;
        ACPI_DISABLE = facp->ACPI_DISABLE;
 
-       PM1a_CNT = (uint32_t*) (uintptr_t) facp->PM1a_CNT_BLK;
-       PM1b_CNT = (uint32_t*) (uintptr_t) facp->PM1b_CNT_BLK;
+       PM1a_CNT = facp->PM1a_CNT_BLK;
+       PM1b_CNT = facp->PM1b_CNT_BLK;
 
        PM1_CNT_LEN = facp->PM1_CNT_LEN;
 
@@ -357,7 +359,7 @@ namespace x86 {
       addr += 16;
     }
 
-    panic("ACPI RDST-search failed\n");
+    os::panic("ACPI RDST-search failed\n");
   }
 
   void ACPI::reboot()
@@ -369,10 +371,9 @@ namespace x86 {
     // check if shutdown enabled
     if (SCI_EN == 1) {
       // write shutdown commands
-      hw::outw((uintptr_t) PM1a_CNT, SLP_TYPa | SLP_EN);
+      hw::outw(PM1a_CNT, SLP_TYPa | SLP_EN);
       if (PM1b_CNT != 0)
-        hw::outw((uintptr_t) PM1b_CNT, SLP_TYPb | SLP_EN);
-      printf("*** ACPI shutdown failed\n");
+        hw::outw(PM1b_CNT, SLP_TYPb | SLP_EN);
     }
   }
 
@@ -384,17 +385,13 @@ namespace x86 {
     // ACPI shutdown
     get().acpi_shutdown();
 
-    // http://forum.osdev.org/viewtopic.php?t=16990
     hw::outw (0xB004, 0x2000);
 
-    const char s[] = "Shutdown";
-    const char *p;
-    for (p = s; *p; p++)
-      // magic code for bochs and qemu
-      hw::outb (0x8900, *s);
+    // magic code for bochs and qemu
+    const char* s = "Shutdown";
+    while (*s) hw::outb (0x8900, *(s++));
 
     // VMWare poweroff when "gui.exitOnCLIHLT" is true
-    printf("Shutdown failed :(\n");
     while (true) asm ("cli; hlt");
-  }
+  } // shutdown()
 }

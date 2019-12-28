@@ -1,30 +1,15 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <common.cxx>
 #include <net/tcp/write_queue.hpp>
 
 #include <vector>
 
+using namespace net;
 using namespace net::tcp;
 
-Chunk create_write_request(size_t size)
+inline static auto create_write_request(size_t size)
 {
-  return Chunk{size};
+  return tcp::construct_buffer(size);
 }
 
 CASE("Creating a WriteQueue and operate it")
@@ -136,7 +121,7 @@ CASE("Creating a WriteQueue and operate it")
       const uint32_t N = 5;
       const uint32_t len = 1000;
 
-      std::vector<Chunk> reqs;
+      std::vector<net::tcp::buffer_t> reqs;
       for(int i = 0; i < N; i++) {
         reqs.emplace_back(create_write_request(len));
         wq.push_back(reqs[i]);

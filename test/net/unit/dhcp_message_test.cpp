@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <common.cxx>
 #include <net/dhcp/message.hpp>
@@ -32,6 +16,7 @@ struct test_opt
 // Creates a DHCP DISCOVERY message on the buffer
 net::dhcp::Message* create_discovery_msg(uint8_t* buffer)
 {
+  using namespace net;
   using namespace net::dhcp;
   auto* msg = reinterpret_cast<Message*>(buffer);
 
@@ -39,9 +24,9 @@ net::dhcp::Message* create_discovery_msg(uint8_t* buffer)
   msg->htype  = static_cast<uint8_t>(htype::ETHER);
   msg->hlen   = ETH_ALEN;
   msg->hops   = 0;
-  msg->xid    = net::htonl(322420);
+  msg->xid    = htonl(322420);
   msg->secs   = 0;
-  msg->flags  = net::htons(static_cast<uint16_t>(flag::BOOTP_BROADCAST));
+  msg->flags  = htons(static_cast<uint16_t>(flag::BOOTP_BROADCAST));
   msg->ciaddr = 0;
   msg->yiaddr = 0;
   msg->siaddr = 0;

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 /**
    @note This virtio implementation was very much inspired by
@@ -226,6 +210,7 @@ public:
 
     void disable_interrupts();
     void enable_interrupts();
+    bool interrupts_enabled() const noexcept;
 
     /** Release token. @param head : the token ID to release*/
     void release(uint32_t head);
@@ -273,10 +258,6 @@ public:
       return _size;
     }
 
-    /** Inject a packet filter delegate the last possible point downstream */
-    inline void on_exit_to_physical(delegate<void(net::Packet_ptr)> dlg)
-    { on_exit_to_physical_ = dlg; };
-
   private:
     /** Initialize the queue buffer */
     void init_queue(int size, char* buf);
@@ -295,8 +276,6 @@ public:
     uint16_t _desc_in_flight = 0; // Entries in _queue_desc currently in use
     uint16_t _last_used_idx = 0; // Last known value of _queue.used->idx
     uint16_t _pci_index = 0; // Queue nr.
-
-    delegate<void(net::Packet_ptr p)> on_exit_to_physical_ {};
   };
 
 

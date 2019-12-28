@@ -1,0 +1,13 @@
+//-*- C++ -*-
+/**
+ * Master thesis
+ * by Alf-Andre Walla 2016-2017
+ *
+**/
+#pragma once
+#ifndef LIVEUPDATE_API
+#define LIVEUPDATE_API
+
+#include "liveupdate.hpp"
+
+#endif

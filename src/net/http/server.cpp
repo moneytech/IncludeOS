@@ -1,21 +1,7 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2016-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <net/http/server.hpp>
+#include <net/inet>
+#include <smp>
 
 namespace http {
 
@@ -36,7 +22,7 @@ namespace http {
 
   void Server::listen(uint16_t port)
   {
-    Expects(on_request_ != nullptr);
+    assert(on_request_ != nullptr && "You must set 'on_request' on the server to receive requests!");
 
     bind(port);
 
@@ -63,8 +49,11 @@ namespace http {
 
   void Server::bind(const uint16_t port)
   {
+    assert(tcp_.get_cpuid() == SMP::cpu_id());
     tcp_.listen(port, {this, &Server::on_connect});
-    INFO("HTTP Server", "Listening on port %u", port);
+    SMP::global_lock();
+    INFO("HTTP Server", "Listening on port %u on CPU %d", port, SMP::cpu_id());
+    SMP::global_unlock();
   }
 
   void Server::connect(Connection::Stream_ptr stream)
@@ -88,10 +77,6 @@ namespace http {
   {
     const auto idx = conn.idx();
     connections_[idx] = nullptr;
-    if (free_idx_.capacity() < connections_.size())
-    {
-      free_idx_.reserve(connections_.size());
-    }
     free_idx_.push_back(idx);
   }
 

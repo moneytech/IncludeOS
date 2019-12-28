@@ -1,238 +1,514 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #ifndef NET_INET_HPP
 #define NET_INET_HPP
 
+#include <vector>
 #include <chrono>
 #include <unordered_set>
-
 #include <net/inet_common.hpp>
 #include <hw/mac_addr.hpp>
 #include <hw/nic.hpp>
+#include <map>
+#include <net/port_util.hpp>
+#include "conntrack.hpp"
+
+#include "ip4/ip4.hpp"
+#include "ip4/icmp4.hpp"
+#include "ip4/arp.hpp"
+#include "ip6/ip6.hpp"
+#include "ip6/icmp6.hpp"
+#include "ip6/ndp.hpp"
+#include "ip6/slaac.hpp"
+#include "ip6/mld.hpp"
+#include "dns/client.hpp"
+#include "tcp/tcp.hpp"
+#include "udp/udp.hpp"
 
 namespace net {
 
-  class   TCP;
-  class   UDP;
-  class   DHClient;
-  class   ICMPv4;
+  class DHClient;
 
-  /**
-   * An abstract IP-stack interface.
-   * Provides a common interface for IPv4 and (future) IPv6, simplified with
-   *  no constructors etc.
-   **/
-  template <typename IPV>
-  struct Inet {
-    using Stack = Inet<IPV>;
-    using Forward_delg = delegate<void(Stack& source, typename IPV::IP_packet_ptr)>;
-    using Route_checker = delegate<bool(typename IPV::addr)>;
-    using IP_packet_factory = delegate<typename IPV::IP_packet_ptr(Protocol)>;
+  /** A complete IP network stack */
+  class Inet {
+  public:
 
-    template <typename IPv>
-    using resolve_func = delegate<void(typename IPv::addr, Error&)>;
-    using Vip_list = std::unordered_set<typename IPV::addr>;
+    using Stack          = class Inet;
+    using IP_packet_ptr  = IP4::IP_packet_ptr;
+    using IP6_packet_ptr = IP6::IP_packet_ptr;
+    using IP_addr        = ip4::Addr;
+    using IP6_addr       = ip6::Addr;
 
-    ///
-    /// NETWORK CONFIGURATION
-    ///
+    using Forward_delg  = delegate<void(IP_packet_ptr, Stack& source,
+            Conntrack::Entry_ptr)>;
+    using Forward_delg6  = delegate<void(IP6_packet_ptr, Stack& source,
+            Conntrack::Entry_ptr)>;
+    using Route_checker = delegate<bool(IP_addr)>;
+    using Route_checker6 = delegate<bool(IP6_addr)>;
+    using IP_packet_factory  = delegate<IP_packet_ptr(Protocol)>;
+    using IP6_packet_factory = delegate<IP6_packet_ptr(Protocol)>;
 
-    /** Get IP address of this interface **/
-    virtual typename IPV::addr ip_addr()        = 0;
-
-    /** Get netmask of this interface **/
-    virtual typename IPV::addr netmask()        = 0;
-
-    /** Get default gateway for this interface **/
-    virtual typename IPV::addr gateway()        = 0;
-
-    /** Get default dns for this interface **/
-    virtual typename IPV::addr dns_addr()       = 0;
-
-    /** Get broadcast address for this interface **/
-    virtual typename IPV::addr broadcast_addr() = 0;
-
-   /** Set default gateway for this interface */
-    virtual void set_gateway(typename IPV::addr server) = 0;
-
-    /** Set DNS server for this interface */
-    virtual void set_dns_server(typename IPV::addr server) = 0;
-
-    /** Configure network for this interface */
-    virtual void network_config(typename IPV::addr ip,
-                                typename IPV::addr nmask,
-                                typename IPV::addr gateway,
-                                typename IPV::addr dnssrv = IPV::ADDR_ANY) = 0;
-
-    /** Reset network configuration for this interface */
-    virtual void reset_config() = 0;
-
-    using dhcp_timeout_func = delegate<void(bool timed_out)>;
-
-    /** Use DHCP to configure this interface */
-    virtual void negotiate_dhcp(double timeout = 10.0, dhcp_timeout_func = nullptr) = 0;
-
-    virtual bool is_configured() const = 0;
-
+    using resolve_func = dns::Client::Resolve_handler;
     using on_configured_func = delegate<void(Stack&)>;
+    using dhcp_timeout_func = delegate<void(bool timed_out)>;
+    using slaac_timeout_func = delegate<void(bool complete)>;
 
-    /** Assign callback to when the stack has been configured */
-    virtual void on_config(on_configured_func handler) = 0;
+    using Port_utils  = std::map<net::Addr, Port_util>;
+    using Vip4_list = std::vector<ip4::Addr>;
+    using Vip6_list = std::vector<ip6::Addr>;
 
-    /** Get a list of virtual IP4 addresses assigned to this interface */
-    virtual const Vip_list virtual_ips() const = 0;
+    std::string ifname() const
+    { return nic_.device_name(); }
 
-    /** Check if an IP is a (possibly virtual) loopback address */
-    virtual bool is_loopback(typename IPV::addr a) const = 0;
+    MAC::Addr link_addr() const
+    { return nic_.mac(); }
 
-    /** Add an IP address as a virtual loopback IP */
-    virtual void add_vip(typename IPV::addr a) = 0;
+    hw::Nic& nic() const
+    { return nic_; }
 
-    /** Remove an IP address from the virtual loopback IP list */
-    virtual void remove_vip(typename IPV::addr a) = 0;
+    ip4::Addr ip_addr() const
+    { return ip4_.address(); }
 
-    /** Determine the appropriate source address for a destination. */
-    virtual typename IPV::addr get_source_addr(typename IPV::addr dest) = 0;
+    ip4::Addr netmask() const
+    { return ip4_.networkmask(); }
 
-    /** Determine if an IP address is a valid source address for this stack */
-    virtual bool is_valid_source(typename IPV::addr) = 0;
+    ip4::Addr gateway() const
+    { return ip4_.gateway(); }
 
+    ip4::Addr dns_addr() const
+    { return dns_server_; }
 
-    ///
-    /// PROTOCOL OBJECTS
-    ///
+    ip4::Addr broadcast_addr() const
+    { return ip4_.broadcast_addr(); }
 
-    /** Get the IP protocol object for this interface */
-    virtual IPV& ip_obj() = 0;
+    ip6::Addr ip6_src(const ip6::Addr& dst) const
+    { return addr6_config().get_src(dst); }
 
-    /** Get the TCP protocol object for this interface */
-    virtual TCP& tcp() = 0;
+    ip6::Addr ip6_addr() const {
+      if(auto addr = ip6_global(); addr != ip6::Addr::addr_any)
+        return addr;
+      else return ip6_linklocal();
+    }
 
-    /** Get the UDP protocol object for this interface */
-    virtual UDP& udp() = 0;
+    ip6::Addr ip6_linklocal() const
+    { return addr6_config().get_first_linklocal(); }
 
-    /** Get the ICMP protocol object for this interface */
-    virtual ICMPv4& icmp() = 0;
+    ip6::Addr ip6_global() const
+    { return addr6_config().get_first_unicast(); }
+
+    uint8_t netmask6() const
+    { return ndp_.static_prefix(); }
+
+    ip6::Addr gateway6() const
+    { return ndp_.static_gateway(); }
+
+    void cache_link_addr(ip4::Addr ip, MAC::Addr mac);
+    void flush_link_cache();
+    void set_link_cache_flush_interval(std::chrono::minutes min);
+
+    /** Get the IP-object belonging to this stack */
+    IP4& ip_obj()
+    { return ip4_; }
+
+    /** Get the IP6-object belonging to this stack */
+    IP6& ip6_obj() { return ip6_; }
+
+    /** Get the TCP-object belonging to this stack */
+    TCP& tcp() { return tcp_; }
+
+    /** Get the UDP-object belonging to this stack */
+    UDP& udp() { return udp_; }
+
+    /** Get the ICMP-object belonging to this stack */
+    ICMPv4& icmp() { return icmp_; }
+
+    /** Get the ICMP-object belonging to this stack */
+    ICMPv6& icmp6() { return icmp6_; }
+
+    /** Get the NDP-object belonging to this stack */
+    Ndp& ndp() { return ndp_; }
+
+    /** Get the MLD-object belonging to this stack */
+    Mld& mld() { return mld_; }
+    //Mld2& mld2() { return mld2_; }
+
+    /** Get the DHCP client (if any) */
+    auto dhclient() { return dhcp_;  }
+
+    /**
+     * @brief      Disable or enable Path MTU Discovery (enabled by default)
+     *             RFC 1191
+     *             If enabled, it sets the Don't Fragment flag on each IP4 packet
+     *             TCP and UDP acts based on this being enabled or not
+     *
+     * @param[in]  on    Enables Path MTU Discovery if true, disables if false
+     * @param[in]  aged  Number of minutes that indicate that a PMTU value
+     *                   has grown stale and should be reset/increased
+     *                   This could be set to "infinity" (PMTU should never be
+     *                   increased) by setting the value to IP4::INFINITY
+     */
+    void set_path_mtu_discovery(bool on, uint16_t aged = 10)
+    { ip4_.set_path_mtu_discovery(on, aged); }
+
+    /**
+     * @brief      Triggered by IP when a Path MTU value has grown stale and the value
+     *             is reset (increased) to check if the PMTU for the path could have increased
+     *             This is NOT a change in the Path MTU in response to receiving an ICMP Too Big message
+     *             and no retransmission of packets should take place
+     *
+     * @param[in]  dest  The destination/path
+     * @param[in]  pmtu  The reset PMTU value
+     */
+    void reset_pmtu(Socket dest, IP4::PMTU pmtu);
 
     /**
      *  Error reporting
-     *  Incl. ICMP error report in accordance with RFC 1122
-     *  An ICMP error message has been received - forward to transport layer (UDP or TCP)
+     *
+     *  Including ICMP error report in accordance with RFC 1122 and handling of ICMP
+     *  too big messages in accordance with RFC 1191, 1981 and 4821 (Path MTU Discovery
+     *  and Packetization Layer Path MTU Discovery)
+     *
+     *  Forwards errors to the transport layer (UDP and TCP)
     */
-    virtual void error_report(Error& err, Packet_ptr orig_pckt) = 0;
+    void error_report(Error& err, Packet_ptr orig_pckt);
 
+    /**
+     * Set the forwarding delegate used by this stack.
+     * If set it will get all incoming packets not intended for this stack.
+     * NOTE: This delegate is expected to call the forward chain
+     */
+    void set_forward_delg(Forward_delg fwd) {
+      ip4_.set_packet_forwarding(fwd);
+    }
 
+    void set_forward_delg6(Forward_delg6 fwd) {
+      ip6_.set_packet_forwarding(fwd);
+    }
 
-    ///
-    /// DNS
-    ///
+    /**
+     * Assign a delegate that checks if we have a route to a given IP
+     */
+    void set_route_checker(Route_checker delg);
+    void set_route_checker6(Route_checker6 delg);
 
-    /** DNS resolution */
-    virtual void resolve(const std::string& hostname,
-                         resolve_func<IPV>  func,
-                         bool               force = false) = 0;
-    virtual void resolve(const std::string& hostname,
-                         typename IPV::addr server,
-                         resolve_func<IPV>  func,
-                         bool               force = false) = 0;
+    /**
+     * Get the forwarding delegate used by this stack.
+     */
+    Forward_delg forward_delg()
+    { return ip4_.forward_delg(); }
 
-    virtual void set_domain_name(std::string domain_name) = 0;
+    Forward_delg6 forward_delg6()
+    { return ip6_.forward_delg(); }
 
-    virtual const std::string& domain_name() const = 0;
+    Packet_ptr create_packet() {
+      return nic_.create_packet(nic_.frame_offset_link());
+    }
 
-    ///
-    /// LINK LAYER
-    ///
+    /**
+     * Provision an IP packet
+     * @param proto : IANA protocol number.
+     */
+    IP4::IP_packet_ptr create_ip_packet(Protocol proto) {
+      auto raw = nic_.create_packet(nic_.frame_offset_link());
+      auto ip_packet = static_unique_ptr_cast<IP4::IP_packet>(std::move(raw));
 
-    /** Get the network interface device */
-    virtual hw::Nic& nic() = 0;
+      ip_packet->init(proto);
 
-    /** Get interface name for this interface **/
-    virtual std::string ifname() const = 0;
+      return ip_packet;
+    }
 
-    /** Get linklayer address for this interface **/
-    virtual MAC::Addr link_addr() = 0;
+    IP6::IP_packet_ptr create_ip6_packet(Protocol proto) {
+      auto raw = nic_.create_packet(nic_.frame_offset_link());
+      auto ip_packet = static_unique_ptr_cast<IP6::IP_packet>(std::move(raw));
 
-    /** Add cache entry to the link / IP address cache */
-    virtual void cache_link_addr(typename IPV::addr, MAC::Addr) = 0;
+      ip_packet->init(proto);
 
-    /** Flush  link / IP address cache */
-    virtual void flush_link_cache() = 0;
+      return ip_packet;
+    }
 
-    /** Set the regular interval for link address cache flushing */
-    virtual void set_link_cache_flush_interval(std::chrono::minutes) = 0;
+    IP_packet_factory ip_packet_factory()
+    { return IP_packet_factory{this, &Inet::create_ip_packet}; }
 
+    IP6_packet_factory ip6_packet_factory()
+    { return IP6_packet_factory{this, &Inet::create_ip6_packet}; }
 
-    ///
-    /// ROUTING
-    ///
+    /** MTU retreived from Nic on construction */
+    uint16_t MTU () const
+    { return MTU_; }
 
-    /** Set an IP forwarding delegate. E.g. used to enable routing */
-    virtual void set_forward_delg(Forward_delg) = 0;
+    /**
+     * @func  a delegate that provides a hostname and its address, which is 0 if the
+     * name @hostname was not found. Note: Test with INADDR_ANY for a 0-address.
+     **/
+    void resolve(const std::string& hostname,
+                 resolve_func       func,
+                 bool               force = false);
 
-    /** Assign boolean function to determine if we have route to a given IP */
-    virtual void set_route_checker(Route_checker) = 0;
+    void resolve(const std::string& hostname,
+                 net::Addr          server,
+                 resolve_func       func,
+                 bool               force = false);
 
-    /** Get the IP forwarding delegate */
-    virtual Forward_delg forward_delg() = 0;
+    void set_domain_name(std::string domain_name)
+    { this->domain_name_ = std::move(domain_name); }
 
+    const std::string& domain_name() const
+    { return this->domain_name_; }
 
-    ///
-    /// PACKET MANAGEMENT
-    ///
+    void set_gateway(ip4::Addr gateway)
+    {
+      this->ip4_.set_gateway(gateway);
+    }
 
-    /** Get Maximum Transmission Unit **/
-    virtual uint16_t MTU() const = 0;
+    void set_dns_server(ip4::Addr server)
+    {
+      this->dns_server_ = server;
+    }
 
-    /** Provision empty anonymous packet **/
-    virtual Packet_ptr create_packet() = 0;
+    void set_dns_server6(ip6::Addr server)
+    {
+      this->dns_server6_ = server;
+    }
 
-    /** Delegate to provision initialized IP packet **/
-    virtual IP_packet_factory ip_packet_factory() = 0;
+    /**
+     * @brief Try to negotiate DHCP
+     * @details Initialize DHClient if not present and tries to negotitate dhcp.
+     * Also takes an optional timeout parameter and optional timeout function.
+     *
+     * @param timeout number of seconds before request should timeout
+     * @param dhcp_timeout_func DHCP timeout handler
+     */
+    void negotiate_dhcp(double timeout = 10.0, dhcp_timeout_func = nullptr);
 
-    /** Provision empty IP packet **/
-    virtual typename IPV::IP_packet_ptr create_ip_packet(Protocol) = 0;
+    /* Automatic configuration of ipv6 address for inet */
+    void autoconf_v6(int retries = 1, slaac_timeout_func = nullptr,
+      uint64_t token = 0, bool use_token = false);
 
-    /** Event triggered when there are available buffers in the transmit queue */
-    virtual void on_transmit_queue_available(transmit_avail_delg del) = 0;
+    bool is_configured() const
+    {
+      return ip4_.address() != 0;
+    }
 
-    /** Number of packets the transmit queue has room for */
-    virtual size_t transmit_queue_available() = 0;
+    bool is_configured_v6() const
+    {
+      return addr6_config().get_first_unicast() != ip6::Addr::addr_any;
+    }
 
-    /** Number of buffers available in the bufstore */
-    virtual size_t buffers_available() = 0;
+    // handler called after the network is configured,
+    // either by DHCP or static network configuration
+    void on_config(on_configured_func handler)
+    {
+      configured_handlers_.push_back(handler);
+    }
 
-    /** Number of total buffers in the bufstore */
-    virtual size_t buffers_total() = 0;
+    /** We don't want to copy or move an IP-stack. It's tied to a device. */
+    Inet(Inet&) = delete;
+    Inet(Inet&&) = delete;
+    Inet& operator=(Inet) = delete;
+    Inet operator=(Inet&&) = delete;
 
-    /** Start TCP (e.g. after system suspension). */
-    virtual void force_start_send_queues() = 0;
+    void network_config(ip4::Addr addr,
+                        ip4::Addr nmask,
+                        ip4::Addr gateway,
+                        ip4::Addr dns = IP4::ADDR_ANY);
 
+    void network_config6(ip6::Addr addr6 = IP6::ADDR_ANY,
+                        uint8_t prefix6 = 0,
+                        ip6::Addr gateway6 = IP6::ADDR_ANY);
 
-    ///
-    /// SMP
-    ///
+    void add_addr(const ip6::Addr& addr, uint8_t prefix = 64,
+                  uint32_t pref_lifetime  = ip6::Stateful_addr::infinite_lifetime,
+                  uint32_t valid_lifetime = ip6::Stateful_addr::infinite_lifetime);
 
-    /** Move this interface to the CPU executing the call */
-    virtual void move_to_this_cpu() = 0;
-    virtual int  get_cpu_id() const noexcept = 0;
+    ip6::Addr linklocal_addr() const noexcept
+    { return this->addr6_config().get_first_linklocal(); }
 
-  }; //< class Inet<LINKLAYER, IPV>
-} //< namespace net
+    ip6::Addr_list& addr6_config() noexcept
+    { return this->ip6_.addr_list(); }
+
+    const ip6::Addr_list& addr6_config() const noexcept
+    { return this->ip6_.addr_list(); }
+
+    void reset_config()
+    {
+      this->ip4_.set_addr(IP4::ADDR_ANY);
+      this->ip4_.set_gateway(IP4::ADDR_ANY);
+      this->ip4_.set_netmask(IP4::ADDR_ANY);
+    }
+
+    void reset_config6()
+    {
+      this->ndp_.set_static_addr(IP6::ADDR_ANY);
+      this->ndp_.set_static_gateway(IP6::ADDR_ANY);
+      this->ndp_.set_static_prefix(0);
+
+    }
+
+    // register a callback for receiving signal on free packet-buffers
+    void
+    on_transmit_queue_available(transmit_avail_delg del) {
+      tqa.push_back(del);
+    }
+
+    size_t transmit_queue_available() {
+      return nic_.transmit_queue_available();
+    }
+
+    void force_start_send_queues();
+
+    void move_to_this_cpu();
+
+    int  get_cpu_id() const noexcept {
+      return this->cpu_id;
+    }
+
+    const Vip4_list virtual_ips() const noexcept
+    { return vip4s_; }
+
+    const Vip6_list virtual_ip6s() const noexcept
+    { return vip6s_; }
+
+    /** Check if IP4 address is virtual loopback */
+    bool is_loopback(ip4::Addr a) const
+    {
+      return a.is_loopback()
+        or std::find( vip4s_.begin(), vip4s_.end(), a) != vip4s_.end();
+    }
+
+    /** Check if IP6 address is virtual loopback */
+    bool is_loopback(ip6::Addr a) const
+    {
+      return a.is_loopback()
+        or std::find( vip6s_.begin(), vip6s_.end(), a) != vip6s_.end();
+    }
+
+    /** add ip address as virtual loopback */
+    void add_vip(ip4::Addr a)
+    {
+      if (not is_loopback(a)) {
+        INFO("inet", "adding virtual ip address %s", a.to_string().c_str());
+        vip4s_.emplace_back(a);
+      }
+    }
+
+    void add_vip(ip6::Addr a)
+    {
+      if (not is_loopback(a)) {
+        INFO("inet", "adding virtual ip6 address %s", a.to_string().c_str());
+        vip6s_.emplace_back(a);
+      }
+    }
+
+    /** Remove IP address as virtual loopback */
+    void remove_vip(ip4::Addr a)
+    {
+      auto it = std::find(vip4s_.begin(), vip4s_.end(), a);
+      if (it != vip4s_.end())
+        vip4s_.erase(it);
+    }
+
+    void remove_vip(ip6::Addr a)
+    {
+      auto it = std::find(vip6s_.begin(), vip6s_.end(), a);
+      if (it != vip6s_.end())
+        vip6s_.erase(it);
+    }
+
+    ip4::Addr get_source_addr(ip4::Addr dest)
+    {
+      if (dest.is_loopback())
+        return {127,0,0,1};
+
+      if (is_loopback(dest))
+        return dest;
+
+      return ip_addr();
+    }
+
+    ip6::Addr get_source_addr(ip6::Addr dest)
+    {
+      if (dest.is_loopback())
+        return ip6::Addr{0,0,0,1};
+
+      if (is_loopback(dest))
+        return dest;
+
+      return ip6_src(dest);
+    }
+
+    bool is_valid_source(const Addr& addr) const
+    { return addr.is_v4() ? is_valid_source4(addr.v4()) : is_valid_source6(addr.v6()); }
+
+    bool is_valid_source4(ip4::Addr src) const
+    { return src == ip_addr(); }
+
+    // @todo: is_multicast needs to be verified in mld
+    bool is_valid_source6(const ip6::Addr& src) const
+    { return ip6_.is_valid_source(src) or src.is_multicast(); }
+
+    std::shared_ptr<Conntrack>& conntrack()
+    { return conntrack_; }
+
+    void enable_conntrack(std::shared_ptr<Conntrack> ct);
+
+    Port_utils& tcp_ports()
+    { return tcp_ports_; }
+
+    Port_utils& udp_ports()
+    { return udp_ports_; }
+
+    bool isRouter() const
+    { return false; }
+
+    /** Initialize with ANY_ADDR */
+    Inet(hw::Nic& nic);
+
+  private:
+
+    void process_sendq(size_t);
+    // delegates registered to get signalled about free packets
+    std::vector<transmit_avail_delg> tqa;
+
+    ip4::Addr dns_server_;
+
+    Vip4_list vip4s_ = {{127,0,0,1}};
+    Vip6_list vip6s_ = {{IP6::ADDR_LOOPBACK}};
+
+    // This is the actual stack
+    hw::Nic& nic_;
+    Arp    arp_;
+    Ndp    ndp_;
+    Mld    mld_;
+    //Mld2   mld2_;
+    IP4    ip4_;
+    IP6    ip6_;
+    ICMPv4 icmp_;
+    ICMPv6 icmp6_;
+    UDP    udp_;
+    TCP    tcp_;
+
+    Port_utils tcp_ports_;
+    Port_utils udp_ports_;
+
+    std::shared_ptr<Conntrack> conntrack_;
+
+    // we need this to store the cache per-stack
+    dns::Client dns_;
+    std::string domain_name_;
+    ip6::Addr dns_server6_;
+
+    std::shared_ptr<net::DHClient> dhcp_{};
+    std::unique_ptr<net::Slaac>    slaac_{};
+
+    std::vector<on_configured_func> configured_handlers_;
+
+    int   cpu_id;
+    const uint16_t MTU_;
+
+    friend class Slaac;
+
+    void add_addr_autoconf(const ip6::Addr& addr, uint8_t prefix,
+      uint32_t pref_lifetime, uint32_t valid_lifetime);
+  };
+}
 
 #endif

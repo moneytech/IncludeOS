@@ -6,13 +6,15 @@ set(ARCH_OBJECTS
   profile_intr.asm
   apic_asm.asm
   arch_start.asm
+  exceptions.asm
   interrupts.asm
+  fiber.asm
+  paging.cpp
 )
 
 add_library(arch STATIC ${ARCH_OBJECTS})
-add_library(crti STATIC crti.asm)
-add_library(crtn STATIC crtn.asm)
 
-add_dependencies(arch PrecompiledLibraries)
-set_target_properties(crti crtn arch PROPERTIES LINKER_LANGUAGE CXX)
-install(TARGETS crti crtn arch DESTINATION includeos/${ARCH}/lib)
+set_target_properties(arch PROPERTIES LINKER_LANGUAGE CXX)
+install(TARGETS arch DESTINATION lib)
+install(FILES linker.ld DESTINATION .)
+configure_file(linker.ld ${CMAKE_BINARY_DIR})

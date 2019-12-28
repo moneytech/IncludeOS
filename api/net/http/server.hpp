@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2016-2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef HTTP_SERVER_HPP
@@ -94,6 +78,13 @@ namespace http {
      */
     Response_ptr create_response(status_t code = http::OK) const;
 
+    /**
+     * Return CPU server is hosted on
+    **/
+    int get_cpuid() const noexcept {
+      return tcp_.get_cpuid();
+    }
+
     virtual ~Server();
 
   protected:
@@ -113,7 +104,7 @@ namespace http {
      * @param[in]  conn  The TCP connection
      */
     virtual void on_connect(TCP_conn conn)
-    { connect(std::make_unique<Connection::Stream>(std::move(conn))); }
+    { connect(std::make_unique<net::tcp::Stream>(std::move(conn))); }
 
     /**
      * @brief      Connect the stream to the server.
@@ -162,6 +153,32 @@ namespace http {
     void receive(Request_ptr, status_t code, Server_connection&);
 
   }; // < class Server
+
+  /**
+   * Helper function to create an HTTP server on a given TCP instance
+   *
+   * @param tcp
+   *   The tcp instance (interface)
+   *
+   * @param handler
+   *   The handler to be invoked when a request is received (optional)
+   *
+   * @param timeout
+   *   The duration for how long a connection can be idle (0 = no timeout)
+   *
+   * Usage example:
+   * @code
+   *   auto& inet = net::Inet::stack<0>();
+   *   Expects(inet.is_configured());
+   *   auto server = http::make_server(inet.tcp());
+   *   server->on_request([](auto req, auto rw){...});
+   *   server->listen(80);
+   * @endcode
+   */
+  template<typename = void>
+  inline Server_ptr make_server(Server::TCP& tcp, Server::Request_handler handler = nullptr, Server::idle_duration timeout = Server::DEFAULT_IDLE_TIMEOUT) {
+    return std::make_unique<Server>(tcp, handler, timeout);
+  }
 
 } // < namespace http
 

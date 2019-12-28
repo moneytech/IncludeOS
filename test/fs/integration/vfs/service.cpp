@@ -1,23 +1,9 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
 //1 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #define OS_TERMINATE_ON_CONTRACT_VIOLATION
 
 #include <os>
+#include <hal/machine.hpp>
 #include <fs/vfs.hpp>
 #include <memdisk>
 
@@ -57,12 +43,12 @@ private:
 
 
 fs::File_system& memdisk() {
-  static auto disk = fs::new_shared_memdisk();
+  static auto disk = fs::shared_memdisk();
 
   if (not disk->fs_ready())
   {
     disk->init_fs([](fs::error_t err, auto&) {
-        if (err) panic("ERROR MOUNTING DISK\n");
+        if (err) os::panic("ERROR MOUNTING DISK\n");
       });
   }
   return disk->fs();
@@ -295,9 +281,9 @@ void Service::start(const std::string&)
   /** Locate all disk drives **/
   INFO("VFS_test", "Mounting all disk drives: ");
 
-  for (auto& drv : hw::Devices::devices<hw::Block_device>()) {
-    INFO("VFS_test", "Drive name: %s \n", drv->device_name().c_str());
-    fs::mount({"dev", drv->device_name()}, *drv, drv->driver_name());
+  for (auto& drv : os::machine().get<hw::Block_device>()) {
+    INFO("VFS_test", "Drive name: %s \n", drv.get().device_name().c_str());
+    fs::mount({"dev", drv.get().device_name()}, drv.get(), drv.get().driver_name());
   }
 
   auto& disk0 = fs::get<fs::Disk_ptr>("/dev/vblk0");
@@ -348,7 +334,7 @@ void Service::start(const std::string&)
       fs::VFS::mount({"/overlord/pictures/"}, my_disk->device_id(), {"/pictures/"}, "Images of our lord commander", [my_disk](auto err){
 
           if (err)
-            panic ("Error mounting dirent from disk on VFS path");
+            os::panic("Error mounting dirent from disk on VFS path");
 
           INFO("VFS_test", "Reading content of newly mounted folder");
 
@@ -357,16 +343,16 @@ void Service::start(const std::string&)
           fs::stat("/overlord/pictures/profile.txt", [](auto err, auto dir){
 
               if (err)
-                panic("Error stating file \n");
+                os::panic("Error stating file \n");
 
               INFO("VFS_test", "File found. Reading \n");
 
-              dir.read([](auto err, auto buf, auto size){
+              dir.read([](auto err, auto buf){
 
                   if (err)
-                    panic("Errror reading file contents \n");
+                    os::panic("Errror reading file contents \n");
 
-                  std::string res((char*)buf.get(), size);
+                  std::string res((char*)buf->data(), buf->size());
 
                   std::cout << "Our overlords likeness: \n\n " << res;
                   INFO("VFS_test", "SUCCESS");

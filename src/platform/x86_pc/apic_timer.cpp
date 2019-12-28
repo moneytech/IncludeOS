@@ -1,24 +1,8 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include "apic_timer.hpp"
 #include "apic.hpp"
 #include "pit.hpp"
-#include <kernel/irq_manager.hpp>
+#include <kernel/events.hpp>
 #include <kernel/timers.hpp>
 #include <smp>
 #include <cstdio>
@@ -42,10 +26,10 @@ namespace x86
 
   struct alignas(SMP_ALIGN) timer_data
   {
+    int  intr;
     bool intr_enabled = false;
-
   };
-  static std::array<timer_data, SMP_MAX_CORES> timerdata;
+  static SMP::Array<timer_data> timerdata;
 
   #define GET_TIMER() PER_CPU(timerdata)
 
@@ -56,19 +40,22 @@ namespace x86
         oneshot, // timer start function
         stop);   // timer stop function
 
+    // set interrupt handler
+    GET_TIMER().intr =
+        Events::get().subscribe(Timers::timers_handler);
     // initialize local APIC timer
-    APIC::get().timer_init();
+    APIC::get().timer_init(GET_TIMER().intr);
   }
   void APIC_Timer::calibrate()
   {
     init();
 
     if (ticks_per_micro != 0) {
-      // make sure timers are delay-initalized
-      const auto irq = LAPIC_IRQ_TIMER;
-      IRQ_manager::get().subscribe(irq, start_timers);
-      // soft-trigger IRQ immediately
-      IRQ_manager::get().register_irq(irq);
+      start_timers();
+      // with SMP, signal everyone else too (IRQ 1)
+      if (SMP::cpu_count() > 1) {
+        APIC::get().bcast_ipi(0x21);
+      }
       return;
     }
 
@@ -112,12 +99,8 @@ namespace x86
   void APIC_Timer::start_timers() noexcept
   {
     assert(ready());
-    // set interrupt handler
-    IRQ_manager::get().subscribe(LAPIC_IRQ_TIMER, Timers::timers_handler);
     // delay-start all timers
-    auto irq = IRQ_manager::get().get_free_irq();
-    IRQ_manager::get().subscribe(irq, Timers::ready);
-    IRQ_manager::get().register_irq(irq);
+    Events::get().defer(Timers::ready);
   }
 
   bool APIC_Timer::ready() noexcept
@@ -125,11 +108,16 @@ namespace x86
     return ticks_per_micro != 0;
   }
 
-  void APIC_Timer::oneshot(std::chrono::microseconds micros) noexcept
+  void APIC_Timer::oneshot(std::chrono::nanoseconds nanos) noexcept
   {
     // prevent overflow
-    uint64_t ticks = micros.count() * ticks_per_micro;
-    if (ticks > 0xFFFFFFFF) ticks = 0xFFFFFFFF;
+    uint64_t ticks = nanos.count() / 1000 * ticks_per_micro;
+    if (ticks > 0xFFFFFFFF)
+        ticks = 0xFFFFFFFF;
+    // prevent oneshots less than a microsecond
+    // NOTE: when ticks == 0, the entire timer system stops
+    else if (UNLIKELY(ticks < ticks_per_micro))
+        ticks = ticks_per_micro;
 
     // set initial counter
     auto& lapic = APIC::get();

@@ -1,71 +1,65 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2017 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <net/http/client_connection.hpp>
-#include <net/http/client.hpp>
-
-#include <debug>
+#include <net/http/basic_client.hpp>
 
 namespace http {
 
-  Client_connection::Client_connection(Client& client, Stream_ptr stream)
+  Client_connection::Client_connection(Basic_client& client, Stream_ptr stream)
     : Connection{std::move(stream)},
       client_(client),
       req_(nullptr),
       res_(nullptr),
       on_response_{nullptr},
       timer_({this, &Client_connection::timeout_request}),
-      timeout_dur_{timeout_duration::zero()}
+      timeout_dur_{timeout_duration::zero()},
+      redirect_{client.default_follow_redirect}
   {
     // setup close event
     stream_->on_close({this, &Client_connection::close});
   }
 
-  void Client_connection::send(Request_ptr req, Response_handler on_res, const size_t bufsize, timeout_duration timeout)
+  void Client_connection::send(Request_ptr req, Response_handler on_res, int redirects, timeout_duration timeout)
   {
     Expects(available());
     req_ = std::move(req);
     on_response_ = std::move(on_res);
     Expects(on_response_ != nullptr);
     timeout_dur_ = timeout;
+    redirect_ = redirects;
 
     if(timeout_dur_ > timeout_duration::zero())
       timer_.restart(timeout_dur_);
 
-    send_request(bufsize);
+    // if the stream is not established, send the request when connected
+    if(not stream_->is_connected())
+    {
+      stream_->on_connect([this](auto&)
+      {
+        this->send_request();
+      });
+    }
+    else {
+      send_request();
+    }
   }
 
-  void Client_connection::send_request(const size_t bufsize)
+  void Client_connection::send_request()
   {
     keep_alive_ = (req_->header().value(header::Connection) != "close");
 
-    stream_->on_read(bufsize, {this, &Client_connection::recv_response});
+    stream_->on_read(0 , {this, &Client_connection::recv_response});
 
     stream_->write(req_->to_string());
   }
 
-  void Client_connection::recv_response(buffer_t buf, size_t len)
+  void Client_connection::recv_response(buffer_t buf)
   {
-    if(len == 0) {
+    if (buf->empty()) {
       end_response({Error::NO_REPLY});
       return;
     }
 
-    const auto data = std::string{(char*)buf.get(), len};
+    const std::string data{(char*) buf->data(), buf->size()};
 
     // restart timer since we got data
     if(timer_.is_running())
@@ -106,14 +100,15 @@ namespace http {
     // Assume we want some headers
     if(!header.is_empty())
     {
+      // Note: Content Length is not required
       if(header.has_field(header::Content_Length))
       {
         try
         {
-          const unsigned conlen = std::stoul(header.value(header::Content_Length).to_string());
+          const unsigned conlen = std::stoul(std::string(header.value(header::Content_Length)));
           const unsigned body_size = res_->body().size();
-          debug2("<http::Connection> [%s] Data: %u ConLen: %u Body:%u\n",
-            req_->uri().to_string().to_string().c_str(), data.size(), conlen, body_size);
+          //printf("<http::Connection> [%s] Data: %u ConLen: %u Body:%u\n",
+          //  req_->uri().to_string().to_string().c_str(), data.size(), conlen, body_size);
           // risk buffering forever if no timeout
           if(body_size == conlen)
           {
@@ -127,8 +122,15 @@ namespace http {
         catch(...)
         { end_response({Error::INVALID}); }
       }
-      else
+      // HTTP/1.1 7.2.2 Length: Any response message which must not include an entity body
+      // (such as the 1xx, 204, and 304 responses and any response to a HEAD request)
+      // is always terminated by the first empty line after the header fields
+      else if(const auto code = res_->status_code();
+        is_informational(code) or code == No_Content or code == Not_Modified
+        or req_->method() == HEAD)
+      {
         end_response();
+      }
     }
     else if(req_->method() == HEAD)
     {
@@ -138,15 +140,33 @@ namespace http {
 
   void Client_connection::end_response(Error err)
   {
-    // move response to a copy in case of callback result in new request
-    Ensures(on_response_);
-    auto callback = std::move(on_response_);
-    on_response_.reset();
+    // If the request has timed out, but the response is received later,
+    // just discard (we can't do anything because we have no callback).
+    // This MAY have side effects if the connection is reused and
+    // a delayed response is received
+    if (on_response_)
+    {
+      if(UNLIKELY(not err and can_redirect(res_)))
+      {
+        uri::URI location{res_->header().value("Location")};
 
-    // stop timeout timer
-    timer_.stop();
+        if(location.is_valid())
+        {
+          redirect(location);
+          end(); // hope its good here..
+          return;
+        }
 
-    callback(err, std::move(res_), *this);
+      }
+      // move response to a copy in case of callback result in new request
+      auto callback = std::move(on_response_);
+      on_response_.reset();
+
+      // stop timeout timer
+      timer_.stop();
+
+      callback(err, std::move(res_), *this);
+    }
     end();
     /*if(!released())
     {
@@ -162,6 +182,36 @@ namespace http {
     }*/
   }
 
+  bool Client_connection::can_redirect(const Response_ptr& res) const
+  {
+    if(redirect_ < 1) return false;
+    if(res == nullptr) return false;
+    if(not is_redirection(res->status_code())) return false;
+    if(not res->header().has_field("Location")) return false;
+
+    return true;
+  }
+
+  void Client_connection::redirect(uri::URI location)
+  {
+    Expects(on_response_);
+
+    // modify req
+    client_.populate_from_url(*req_, location);
+
+    // build option
+    Basic_client::Options options;
+    options.timeout         = timeout_dur_;
+    options.follow_redirect = --redirect_;
+
+    // move callback
+    auto callback = std::move(on_response_);
+    on_response_.reset();
+
+    // have client send new request
+    client_.send(std::move(req_), location, std::move(callback), options);
+  }
+
   void Client_connection::close()
   {
     // if the user havent received a response yet
@@ -170,7 +220,12 @@ namespace http {
       auto callback = std::move(on_response_);
       on_response_.reset();
       timer_.stop();
-      callback(Error::CLOSING, std::move(res_), *this);
+      if(res_ != nullptr and res_->headers_complete()) {
+        callback(Error::NONE, std::move(res_), *this);
+      }
+      else {
+        callback(Error::CLOSING, std::move(res_), *this);
+      }
     }
 
     client_.close(*this);

@@ -1,20 +1,3 @@
-;; This file is a part of the IncludeOS unikernel - www.includeos.org
-;;
-;; Copyright 2015 Oslo and Akershus University College of Applied Sciences
-;; and Alfred Bratterud
-;;
-;; Licensed under the Apache License, Version 2.0 (the "License");
-;; you may not use this file except in compliance with the License.
-;; You may obtain a copy of the License at
-;;
-;;     http:;;www.apache.org/licenses/LICENSE-2.0
-;;
-;; Unless required by applicable law or agreed to in writing, software
-;; distributed under the License is distributed on an "AS IS" BASIS,
-;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-;; See the License for the specific language governing permissions and
-;; limitations under the License.
-
 USE16
 ;; Memory layout, 16-bit
 %define _boot_segment 0x07c0
@@ -24,7 +7,6 @@ USE16
 %define _mode32_code_segment 0x08
 %define _mode32_data_segment 0x10
 
-%define _kernel_loc   0xA00000
 %define _kernel_stack 0xA0000
 
 ;; We don't really need a stack, except for calls
@@ -45,8 +27,10 @@ _start:
 ALIGN 4
 srv_size:
 	dd 0
-srv_offs:
+srv_entry:
 	dd 0
+srv_load:
+    dd 0
 
 ;;; Actual start
 boot:
@@ -86,7 +70,7 @@ protected_mode:
 	cli
 	;; Load global descriptor table register
 	lgdt [gdtr] ;;Bochs seems to allready have one
-	;; Set the 2n'd bit in cr0
+	;; Set the 1st bit in cr0
 	mov eax, cr0
 	or   al, 1
 	mov cr0, eax
@@ -186,7 +170,7 @@ mode32:
 	mov eax, 1
 
 	;; Location to load kernel
-	mov edi,_kernel_loc
+	mov edi,[srv_load+(_boot_segment<<4)]
 
 .more:
 	mov cl, LOAD_SIZE
@@ -212,7 +196,7 @@ mode32:
 
 	;; GERONIMO!
 	;; Jump to service
-	call DWORD [srv_offs+(_boot_segment<<4)]
+	call DWORD [srv_entry+(_boot_segment<<4)]
 
 
 	%include "boot/disk_read_lba.asm"

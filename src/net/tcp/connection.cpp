@@ -1,52 +1,34 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // #define DEBUG
 // #define DEBUG2
 
-#include <gsl/gsl_assert> // Ensures/Expects
+#include <common> // Ensures/Expects
 #include <net/tcp/connection.hpp>
 #include <net/tcp/connection_states.hpp>
-#include <net/tcp/packet.hpp>
 #include <net/tcp/tcp.hpp>
 #include <net/tcp/tcp_errors.hpp>
 
 using namespace net::tcp;
 using namespace std;
 
-/*
-  This is most likely used in a ACTIVE open
-*/
 Connection::Connection(TCP& host, Socket local, Socket remote, ConnectCallback callback)
   : host_(host),
-    local_(local),
-    remote_(remote),
+    local_{std::move(local)}, remote_{std::move(remote)},
+    is_ipv6_(local_.address().is_v6()),
     state_(&Connection::Closed::instance()),
     prev_state_(state_),
-    cb{host_.window_size()},
-    read_request(),
+    cb{(is_ipv6_) ? default_mss_v6 : default_mss, host_.window_size()},
+    read_request(nullptr),
     writeq(),
     on_connect_{std::move(callback)},
     on_disconnect_({this, &Connection::default_on_disconnect}),
     rtx_timer({this, &Connection::rtx_timeout}),
     timewait_dack_timer({this, &Connection::dack_timeout}),
+    recv_wnd_getter{nullptr},
     queued_(false),
     dack_{0},
-    last_ack_sent_{cb.RCV.NXT}
+    last_ack_sent_{cb.RCV.NXT},
+    smss_{MSS()}
 {
   setup_congestion_control();
   //printf("<Connection> Created %p %s  ACTIVE: %u\n", this,
@@ -55,10 +37,64 @@ Connection::Connection(TCP& host, Socket local, Socket remote, ConnectCallback c
 
 Connection::~Connection()
 {
-  //printf("<Connection> Deleted %p %s  ACTIVE: %u\n", this,
+  //printf("<Connection> Deleted %p %s  ACTIVE: %zu\n", this,
   //        to_string().c_str(), host_.active_connections());
+
   rtx_clear();
 }
+
+void Connection::_on_read(size_t recv_bufsz, ReadCallback cb)
+{
+  (void) recv_bufsz;
+  if(read_request == nullptr)
+  {
+    Expects(bufalloc != nullptr);
+    read_request.reset(
+      new Read_request(this->cb.RCV.NXT, host_.min_bufsize(), host_.max_bufsize(), bufalloc.get()));
+    read_request->on_read_callback = cb;
+    const size_t avail_thres = host_.max_bufsize() * Read_request::buffer_limit;
+    bufalloc->on_avail(avail_thres, {this, &Connection::trigger_window_update});
+  }
+  // read request is already set, only reset if new size.
+  else
+  {
+    //printf("on_read already set\n");
+    read_request->on_read_callback = cb;
+    // this will flush the current data to the user (if any)
+    read_request->reset(this->cb.RCV.NXT);
+
+    // due to throwing away buffers (and all data) we also
+    // need to clear the sack list if anything is stored here.
+    if(sack_list)
+      sack_list->clear();
+  }
+}
+
+void Connection::_on_data(DataCallback cb) {
+  if(read_request == nullptr)
+  {
+    Expects(bufalloc != nullptr);
+    read_request.reset(
+      new Read_request(this->cb.RCV.NXT, host_.min_bufsize(), host_.max_bufsize(), bufalloc.get()));
+    read_request->on_data_callback = cb;
+    const size_t avail_thres = host_.max_bufsize() * Read_request::buffer_limit;
+    bufalloc->on_avail(avail_thres, {this, &Connection::trigger_window_update});
+  }
+  // read request is already set, only reset if new size.
+  else
+  {
+    //printf("on_read already set\n");
+    read_request->on_data_callback = cb;
+
+    read_request->reset(this->cb.RCV.NXT);
+
+    // due to throwing away buffers (and all data) we also
+    // need to clear the sack list if anything is stored here.
+    if(sack_list)
+      sack_list->clear();
+  }
+}
+
 
 Connection_ptr Connection::retrieve_shared() {
   return host_.retrieve_shared(this);
@@ -72,8 +108,8 @@ Connection_ptr Connection::retrieve_shared() {
 {
 }*/
 
-Connection::TCB::TCB(const uint32_t recvwin)
-  : SND{ 0, 0, default_window_size, 0, 0, 0, default_mss, 0, false },
+Connection::TCB::TCB(const uint16_t mss, const uint32_t recvwin)
+  : SND{ 0, 0, default_window_size, 0, 0, 0, mss, 0, false },
     ISS{(seq_t)4815162342},
     RCV{ 0, recvwin, 0, 0, 0 },
     IRS{0},
@@ -84,8 +120,8 @@ Connection::TCB::TCB(const uint32_t recvwin)
 {
 }
 
-Connection::TCB::TCB()
-  : Connection::TCB(default_window_size)
+Connection::TCB::TCB(const uint16_t mss)
+  : Connection::TCB(mss, default_window_size)
 {
 }
 
@@ -94,72 +130,47 @@ void Connection::reset_callbacks()
   on_disconnect_ = {this, &Connection::default_on_disconnect};
   on_connect_.reset();
   writeq.on_write(nullptr);
-  on_packet_dropped_.reset();
-  on_rtx_timeout_.reset();
   on_close_.reset();
-  read_request.clean_up();
+  recv_wnd_getter.reset();
+  if(read_request) {
+    read_request->on_read_callback.reset();
+    read_request->on_data_callback.reset();
+  }
+}
+
+uint16_t Connection::MSS() const noexcept {
+  return host_.MSS(ipv());
 }
 
 uint16_t Connection::MSDS() const noexcept {
-  return std::min(host_.MSS(), cb.SND.MSS) + sizeof(Header);
+  return std::min(MSS(), cb.SND.MSS) + sizeof(Header);
 }
 
-uint16_t Connection::SMSS() const noexcept {
-  return host_.MSS();
-}
-
-void Connection::read(ReadBuffer&& buffer, ReadCallback callback) {
-  try {
-    state_->receive(*this, std::forward<ReadBuffer>(buffer));
-    read_request.callback = callback;
-  }
-  catch (const TCPException&) {
-    callback(buffer.buffer, buffer.size());
-  }
-}
-
-size_t Connection::receive(const uint8_t* data, size_t n, bool PUSH) {
-  //printf("<Connection::receive> len=%u\n", n);
+size_t Connection::receive(seq_t seq, const uint8_t* data, size_t n, bool PUSH) {
   // should not be called without an read request
-  Ensures(read_request.buffer.capacity());
-  Ensures(n);
-  auto& buf = read_request.buffer;
+  Expects(read_request);
+  Expects(n > 0);
   size_t received{0};
-  while(n) {
-    if (buf.empty()) buf.renew();
-    auto read = receive(buf, data+received, n);
-    // nothing was read to buffer
-    if(!buf.advance(read)) {
-      // buffer should be full
-      Expects(buf.full());
-      // signal the user
-      debug2("<Connection::receive> Buffer full - signal user\n");
-      if(LIKELY(read_request.callback != nullptr))
-        read_request.callback(buf.buffer, buf.size());
-      // renew the buffer, releasing the old one
-      buf.clear();
-    }
-    n -= read;
-    received += read;
-  }
-  // n shouldnt be negative
-  Expects(n == 0);
 
-  // end of data, signal the user
-  if(PUSH) {
-    debug2("<Connection::receive> PUSH present - signal user\n");
-    if(LIKELY(read_request.callback != nullptr))
-      read_request.callback(buf.buffer, buf.size());
-    // free buffer
-    buf.clear();
+  while(n)
+  {
+    auto read = read_request->insert(seq, data + received, n, PUSH);
+
+    n -= read; // subtract amount of data left to insert
+    received += read; // add to the total recieved
+    seq += read; // advance the sequence number
   }
 
   return received;
 }
 
 
-void Connection::write(Chunk buffer)
+void Connection::write(buffer_t buffer)
 {
+  if (UNLIKELY(buffer->size() == 0)) {
+    throw TCP_error("Can't write zero bytes to TCP stream");
+  }
+
   // Only write if allowed
   if(state_->is_writable())
   {
@@ -179,6 +190,7 @@ void Connection::offer(size_t& packets)
 
   // write until we either cant send more (window closes or no more in queue),
   // or we're out of packets.
+
   while(can_send() and packets)
   {
     auto packet = create_outgoing_packet();
@@ -216,9 +228,9 @@ void Connection::offer(size_t& packets)
   debug2("<Connection::offer> Finished working offer with [%u] packets left and a queue of (%u) with a usable window of %i\n",
         packets, writeq.size(), usable_window());
 
-  if(can_send() and not queued_)
+  if (this->can_send() and not this->is_queued())
   {
-    host_.queue_offer(retrieve_shared());
+    host_.queue_offer(*this);
   }
 }
 
@@ -281,14 +293,48 @@ void Connection::close() {
 }
 
 void Connection::receive_disconnect() {
-  assert(!read_request.buffer.empty());
-  auto& buf = read_request.buffer;
+  Expects(read_request and read_request->size());
 
-  if(LIKELY(read_request.callback != nullptr))
-    read_request.callback(buf.buffer, buf.size());
+  if(read_request->on_read_callback) {
+    // TODO: consider adding back when SACK is complete
+    //auto& buf = read_request->buffer;
+    //if (buf.size() > 0 && buf.missing() == 0)
+    //    read_request->callback(buf.buffer(), buf.size());
+  }
 }
 
-void Connection::segment_arrived(Packet_ptr incoming)
+void Connection::update_fin(const Packet_view& pkt)
+{
+  Expects(pkt.isset(FIN));
+  // should be no problem calling multiple times
+  // as long as fin do not change (which it absolutely shouldnt)
+  fin_recv_ = true;
+  fin_seq_  = pkt.end();
+}
+
+void Connection::handle_fin()
+{
+  // Advance RCV.NXT over the FIN
+  cb.RCV.NXT++;
+  const auto snd_nxt = cb.SND.NXT;
+
+  // empty the read buffer
+  //if(read_request and read_request->size())
+  //  receive_disconnect();
+
+  // signal disconnect to the user
+  signal_disconnect(Disconnect::CLOSING);
+
+  // only ack FIN if user callback didn't result in a sent packet
+  if(cb.SND.NXT == snd_nxt) {
+    debug2("<Connection::handle_fin> acking FIN\n");
+    auto packet = outgoing_packet();
+    packet->set_ack(cb.RCV.NXT).set_flag(ACK);
+    transmit(std::move(packet));
+  }
+}
+
+void Connection::segment_arrived(Packet_view& incoming)
 {
   //const uint32_t FMASK = (~(0x0000000F | htons(0x08)));
   //uint32_t FMASK = 0xFFFFF7F0;
@@ -300,7 +346,7 @@ void Connection::segment_arrived(Packet_ptr incoming)
   //  printf("predicted\n");
 
   // Let state handle what to do when incoming packet arrives, and modify the outgoing packet.
-  switch(state_->handle(*this, std::move(incoming)))
+  switch(state_->handle(*this, incoming))
   {
     case State::OK:
       return; // // Do nothing.
@@ -323,11 +369,13 @@ void Connection::deserialize_from(void*) {}
 __attribute__((weak))
 int  Connection::serialize_to(void*) const {  return 0;  }
 
-Packet_ptr Connection::create_outgoing_packet()
+Packet_view_ptr Connection::create_outgoing_packet()
 {
-  auto packet = host_.create_outgoing_packet();
+  update_rcv_wnd();
+  auto packet = (is_ipv6_) ?
+    host_.create_outgoing_packet6() : host_.create_outgoing_packet();
   // Set Source (local == the current connection)
-  packet->set_source(local());
+  packet->set_source(local_);
   // Set Destination (remote)
   packet->set_destination(remote_);
 
@@ -335,14 +383,28 @@ Packet_ptr Connection::create_outgoing_packet()
 
   if(cb.SND.TS_OK)
     packet->add_tcp_option_aligned<Option::opt_ts_align>(host_.get_ts_value(), cb.get_ts_recent());
-  // Set SEQ and ACK - I think this is OK..
+
+  // Add SACK option (if any entries)
+  if(UNLIKELY(sack_list and sack_list->size()))
+  {
+    Expects(sack_perm);
+
+    auto entries = sack_list->recent_entries();
+    // swap to network endian before adding to packet
+    for(auto& ent : entries)
+      ent.swap_endian();
+
+    packet->add_tcp_option_aligned<Option::opt_sack_align>(entries);
+  }
+
+  // Set SEQ and ACK
   packet->set_seq(cb.SND.NXT).set_ack(cb.RCV.NXT);
   debug("<TCP::Connection::create_outgoing_packet> Outgoing packet created: %s \n", packet->to_string().c_str());
 
   return packet;
 }
 
-void Connection::transmit(Packet_ptr packet) {
+void Connection::transmit(Packet_view_ptr packet) {
   if(!cb.SND.TS_OK
     and !rttm.active()
     and packet->end() == cb.SND.NXT)
@@ -356,12 +418,12 @@ void Connection::transmit(Packet_ptr packet) {
   if(packet->isset(ACK))
     last_ack_sent_ = cb.RCV.NXT;
 
-  //if(packet->has_tcp_data()) printf("<Connection::transmit> TX %s - NXT:%u\n", packet->to_string().c_str(), cb.SND.NXT);
+  //printf("<Connection::transmit> TX %s\n%s\n", packet->to_string().c_str(), to_string().c_str());
 
   host_.transmit(std::move(packet));
 }
 
-bool Connection::handle_ack(const Packet& in)
+bool Connection::handle_ack(const Packet_view& in)
 {
   //printf("<Connection> RX ACK: %s\n", in.to_string().c_str());
 
@@ -386,52 +448,56 @@ bool Connection::handle_ack(const Packet& in)
   } // < dup ack
 
   // new ack
-  else if(LIKELY(in.ack() >= cb.SND.UNA))
+
+  if(is_win_update(in, true_win))
   {
-    if(is_win_update(in, true_win))
-    {
-      cb.SND.WND = true_win;
-      cb.SND.WL1 = in.seq();
-      cb.SND.WL2 = in.ack();
-      //printf("<Connection::handle_ack> Window update (%u)\n", cb.SND.WND);
-    }
-    //pred_flags = htonl((in.tcp_header_length() << 26) | 0x10 | cb.SND.WND >> cb.SND.wind_shift);
-
-    // [RFC 6582] p. 8
-    prev_highest_ack_ = cb.SND.UNA;
-    highest_ack_ = in.ack();
-
-    if(cb.SND.TS_OK)
-    {
-      auto* ts = parse_ts_option(in);
-      last_acked_ts_ = ts->ecr;
-    }
-
-    cb.SND.UNA = in.ack();
-
-    rtx_ack(in.ack());
-
-    take_rtt_measure(in);
-
-    // do either congctrl or fastrecov according to New Reno
-    (not fast_recovery_)
-      ? congestion_control(in) : fast_recovery(in);
-
-    dup_acks_ = 0;
-
-    if(in.has_tcp_data() or in.isset(FIN))
-      return true;
-
-  } // < new ack
-
-  // ACK outside
-  else {
-    return true;
+    //if(cb.SND.WND < SMSS()*2)
+    //  printf("Win update: %u => %u\n", cb.SND.WND, true_win);
+    cb.SND.WND = true_win;
+    cb.SND.WL1 = in.seq();
+    cb.SND.WL2 = in.ack();
+    //printf("<Connection::handle_ack> Window update (%u)\n", cb.SND.WND);
   }
+  //pred_flags = htonl((in.tcp_header_length() << 26) | 0x10 | cb.SND.WND >> cb.SND.wind_shift);
+
+  // [RFC 6582] p. 8
+  prev_highest_ack_ = cb.SND.UNA;
+  highest_ack_ = in.ack();
+
+  if(cb.SND.TS_OK)
+  {
+    const auto* ts = in.ts_option();
+    // reparse to avoid case when stored ts suddenly get lost
+    if(ts == nullptr)
+      ts = in.parse_ts_option();
+
+    if(ts != nullptr) // TODO: not sure the packet is valid if TS missing
+      last_acked_ts_ = ts->ecr;
+  }
+
+  cb.SND.UNA = in.ack();
+
+  rtx_ack(in.ack());
+
+  update_rcv_wnd();
+
+  take_rtt_measure(in);
+
+  // do either congctrl or fastrecov according to New Reno
+  (not fast_recovery_)
+    ? congestion_control(in) : fast_recovery(in);
+
+  dup_acks_ = 0;
+
+  if(in.has_tcp_data() or in.isset(FIN))
+    return true;
+
+  // < new ack
+  // Nothing to process
   return false;
 }
 
-void Connection::congestion_control(const Packet& in)
+void Connection::congestion_control(const Packet_view& in)
 {
   const size_t bytes_acked = highest_ack_ - prev_highest_ack_;
 
@@ -455,14 +521,14 @@ void Connection::congestion_control(const Packet& in)
   } // < congestion avoidance
 
   // try to write
-  if(can_send() and !in.has_tcp_data())
+  if(can_send() and (!in.has_tcp_data() or cb.RCV.WND < in.tcp_data_length()))
   {
     debug2("<Connection::handle_ack> Can send UW: %u SMSS: %u\n", usable_window(), SMSS());
     send_much();
   }
 }
 
-void Connection::fast_recovery(const Packet& in)
+void Connection::fast_recovery(const Packet_view& in)
 {
   // partial ack
   /*
@@ -543,7 +609,7 @@ void Connection::fast_recovery(const Packet& in)
 
   What to do when received ACK is a duplicate.
 */
-void Connection::on_dup_ack(const Packet& in)
+void Connection::on_dup_ack(const Packet_view& in)
 {
   // if less than 3 dup acks
   if(dup_acks_ < 3)
@@ -566,7 +632,7 @@ void Connection::on_dup_ack(const Packet& in)
   // 3 dup acks
   else if(dup_acks_ == 3)
   {
-    debug("<TCP::Connection::on_dup_ack> Dup ACK == 3 - %u\n", cb.SND.UNA);
+    //printf("<TCP::Connection::on_dup_ack> Dup ACK == 3 - UNA=%u recover=%u\n", cb.SND.UNA, cb.recover);
 
     if(cb.SND.UNA - 1 > cb.recover)
       goto fast_rtx;
@@ -574,10 +640,15 @@ void Connection::on_dup_ack(const Packet& in)
     // 4.2.  Timestamp Heuristic
     if(cb.SND.TS_OK)
     {
-      auto* ts = parse_ts_option(in);
-      if(ts != nullptr and last_acked_ts_ == ts->ecr)
+      const auto* ts = in.ts_option();
+      // reparse to avoid case when stored ts suddenly get lost
+      if(ts == nullptr)
+        ts = in.parse_ts_option();
+
+      if(ts != nullptr)
       {
-        goto fast_rtx;
+        if(last_acked_ts_ == ts->ecr)
+          goto fast_rtx;
       }
     }
     // 4.1.  ACK Heuristic
@@ -585,13 +656,13 @@ void Connection::on_dup_ack(const Packet& in)
     {
       goto fast_rtx;
     }
-
     return;
 
     fast_rtx:
     {
       cb.recover = cb.SND.NXT;
-      debug("<TCP::Connection::on_dup_ack> Enter Recovery - Flight Size: %u\n", flight_size());
+      debug("<TCP::Connection::on_dup_ack> Enter Recovery %u - Flight Size: %u\n",
+        cb.recover, flight_size());
       fast_retransmit();
     }
   }
@@ -641,14 +712,275 @@ void Connection::rtx_ack(const seq_t ack) {
   //  x-rtx_q.size(), rtx_q.size());
 }
 
-void Connection::take_rtt_measure(const Packet& packet)
+void Connection::trigger_window_update(os::mem::Pmr_resource& res)
+{
+  const auto reserve = (host_.max_bufsize() * Read_request::buffer_limit);
+  if(res.allocatable() >= reserve and cb.RCV.WND == 0) {
+    //printf("allocatable=%zu cur_win=%u\n", res.allocatable(), cb.RCV.WND);
+    send_window_update();
+  }
+}
+
+uint32_t Connection::calculate_rcv_wnd() const
+{
+  // PRECISE REPORTING
+  if(UNLIKELY(read_request == nullptr))
+    return 0xffff;
+
+  const auto& rbuf = read_request->front();
+  auto remaining = rbuf.capacity() - rbuf.size();
+
+  auto buf_avail = bufalloc->allocatable() + remaining;
+  auto reserve   = (host_.max_bufsize() * Read_request::buffer_limit);
+  auto win = buf_avail > reserve ? buf_avail - reserve : 0;
+
+  return (win < SMSS()) ? 0 : win; // Avoid small silly windows
+
+  // REPORT CHUNKWISE
+  /*
+  //auto allocatable = bufalloc->allocatable();
+  const auto& rbuf = read_request->front();
+
+  auto win = cb.RCV.WND;
+  if (bufalloc->allocatable() < rbuf.capacity()) {
+    printf("[connection] Allocatable data is less than capacity. Win 0. \n");
+    win = 0;
+  } else {
+    win = bufalloc->allocatable() - rbuf.capacity();
+  }
+
+  return win;
+  */
+
+  // REPORT CHUNKWISE FROM ALLOCATOR
+  //return bufalloc->allocatable();
+}
+
+/*
+  7. Process the segment text
+
+  If a packet has data, process the data.
+
+  [RFC 793] Page 74:
+
+  Once in the ESTABLISHED state, it is possible to deliver segment
+  text to user RECEIVE buffers.  Text from segments can be moved
+  into buffers until either the buffer is full or the segment is
+  empty.  If the segment empties and carries an PUSH flag, then
+  the user is informed, when the buffer is returned, that a PUSH
+  has been received.
+
+  When the TCP takes responsibility for delivering the data to the
+  user it must also acknowledge the receipt of the data.
+
+  Once the TCP takes responsibility for the data it advances
+  RCV.NXT over the data accepted, and adjusts RCV.WND as
+  apporopriate to the current buffer availability.  The total of
+  RCV.NXT and RCV.WND should not be reduced.
+
+  Please note the window management suggestions in section 3.7.
+
+  Send an acknowledgment of the form:
+
+  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+
+  This acknowledgment should be piggybacked on a segment being
+  transmitted if possible without incurring undue delay.
+*/
+void Connection::recv_data(const Packet_view& in)
+{
+  Expects(in.has_tcp_data());
+
+  // just drop the packet if we don't have a recv wnd / buffer available.
+  // this shouldn't be necessary with well behaved connections.
+  // I also think we shouldn't reach this point due to State::check_seq checking
+  // if we're inside the window. if packet is out of order tho we can change the RCV wnd (i think).
+  /*if(UNLIKELY(bufalloc->allocatable() < host_.max_bufsize())) {
+    drop(in, Drop_reason::RCV_WND_ZERO);
+    return;
+  }*/
+
+  size_t length = in.tcp_data_length();
+
+  if(UNLIKELY(cb.RCV.WND < length))
+  {
+    drop(in, Drop_reason::RCV_WND_ZERO);
+    update_rcv_wnd();
+    send_ack();
+    return;
+   }
+
+  // Keep track if a packet is being sent during the async read callback
+  const auto snd_nxt = cb.SND.NXT;
+
+  // The packet we expect
+  if(cb.RCV.NXT == in.seq())
+  {
+
+    // If we had packet loss before (and SACK is on)
+    // we need to clear up among the blocks
+    // and increase the total amount of bytes acked
+    if(UNLIKELY(sack_list != nullptr))
+    {
+      const auto res = sack_list->new_valid_ack(in.seq(), length);
+      // if any bytes are cleared up in sack, increase expected sequence number
+      cb.RCV.NXT += res.blocksize;
+
+      // if the ACK was a new ack, but some of the latter part of the segment
+      // was already received by SACK, it will report a shorter length
+      // (only the amount not yet received).
+      // The remaining data is already covered in the reported blocksize
+      // when incrementing RCV.NXT
+      length = res.length;
+    }
+
+
+    // make sure to mark the data as recveied (ACK) before putting in buffer,
+    // since user callback can result in sending new data, which means we
+    // want to ACK the data recv at the same time
+    cb.RCV.NXT += length;
+    // only actually recv the data if there is a read request (created with on_read)
+    if(read_request != nullptr)
+    {
+      const auto recv = read_request->insert(in.seq(), in.tcp_data(), length, in.isset(PSH));
+      // this ensures that the data we ACK is actually put in our buffer.
+      Ensures(recv == length);
+    }
+  }
+  // Packet out of order
+  else if(( (in.seq() + in.tcp_data_length()) - cb.RCV.NXT) < cb.RCV.WND)
+  {
+    // only accept the data if we have a read request
+    if(read_request != nullptr)
+      recv_out_of_order(in);
+  }
+
+
+  // User callback didnt result in transmitting an ACK
+  if(cb.SND.NXT == snd_nxt)
+    ack_data();
+
+  // [RFC 5681] ???
+}
+
+// This function need to sync both SACK and the read buffer, meaning:
+// * Data cannot be old segments (already acked)
+// * Data cannot be duplicate (already S-acked)
+// * Read buffer needs to have room for the data
+// * SACK list needs to have room for the entry (either connects or new)
+// For now, only full segments are allowed (not partial),
+// meaning the data will get thrown away if the read buffer not fully fits it.
+// This makes everything much easier.
+void Connection::recv_out_of_order(const Packet_view& in)
+{
+  // Packets before this point would totally ruin the buffer
+  Expects((in.seq() - cb.RCV.NXT) < cb.RCV.WND);
+  // We know that out of order packets wouldnt reach here
+  // without SACK being permitted
+  Expects(sack_perm);
+
+  // The SACK list is initated on the first out of order packet
+  if(UNLIKELY(not sack_list))
+    sack_list = std::make_unique<Sack_list>();
+
+  size_t length = in.tcp_data_length();
+  auto seq = in.seq();
+
+  // If it's already SACKed, it means we already received the data,
+  // just ignore
+  // note: Due to not accepting partial data i think we're safe with
+  // not passing length as a second arg to contains
+  if(UNLIKELY(sack_list->contains(seq))) {
+    return;
+  }
+
+  auto fits = read_request->fits(seq);
+  // TODO: if our packet partial fits, we just ignores it for now
+  // to avoid headache
+  if(fits >= length)
+  {
+    // Insert into SACK list before the buffer, since we already know 'fits'
+    auto res = sack_list->recv_out_of_order(seq, length);
+
+    // if we can't add the entry, we can't allow to insert into the buffer
+    length = res.length;
+
+    if(UNLIKELY(length == 0))
+      return;
+
+    const auto inserted = read_request->insert(seq, in.tcp_data(), length, in.isset(PSH));
+    Ensures(inserted == length && "No partial insertion support");
+    bytes_sacked_ += inserted;
+  }
+
+  /*
+  size_t rem = length;
+  // Support filling partial packets
+  while(rem != 0 and fits != 0)
+  {
+    auto offset = length - rem;
+    auto inserted = read_request->insert(seq, in.tcp_data()+offset, std::min(rem, fits), in.isset(PSH));
+
+    // Assume for now that we have room in sack list
+    auto res = sack_list->recv_out_of_order(seq, inserted);
+    std::cout << res.entries;
+
+    seq += inserted;
+    rem -= inserted;
+
+    fits = read_request->fits(seq);
+  }*/
+}
+
+void Connection::ack_data()
+{
+  const auto snd_nxt = cb.SND.NXT;
+  // ACK by trying to send more
+  if (can_send())
+  {
+    writeq_push();
+    // nothing got sent
+    if (cb.SND.NXT == snd_nxt)
+    {
+      send_ack();
+    }
+    // something got sent
+    else
+    {
+      dack_ = 0;
+    }
+  }
+  // else regular ACK
+  else
+  {
+    if (use_dack() and dack_ == 0)
+    {
+      start_dack();
+    }
+    else
+    {
+      stop_dack();
+      send_ack();
+    }
+  }
+}
+
+void Connection::take_rtt_measure(const Packet_view& packet)
 {
   if(cb.SND.TS_OK)
   {
-    auto* ts = parse_ts_option(packet);
-    rttm.rtt_measurement(RTTM::milliseconds{host_.get_ts_value() - ntohl(ts->ecr)});
+    const auto* ts = packet.ts_option();
+    // reparse to avoid case when stored ts suddenly get lost
+    if(ts == nullptr)
+      ts = packet.parse_ts_option();
+    if(ts)
+    {
+      rttm.rtt_measurement(RTTM::milliseconds{host_.get_ts_value() - ntohl(ts->ecr)});
+      return;
+    }
   }
-  else if(rttm.active())
+
+  if(rttm.active())
   {
     rttm.stop(RTTM::milliseconds{host_.get_ts_value()});
   }
@@ -669,20 +1001,30 @@ void Connection::retransmit() {
     packet->set_flag(ACK);
   }
   // If retransmission from either SYN-SENT or SYN-RCV, add SYN
-  if(UNLIKELY(is_state(SynSent::instance()) or is_state(SynReceived::instance())))
+  if(UNLIKELY(is_state(SynSent::instance())))
   {
     packet->set_flag(SYN);
-    packet->set_seq(cb.SND.UNA);
     syn_rtx_++;
+    add_syn_options(*packet);
+  }
+  else if(UNLIKELY(is_state(SynReceived::instance())))
+  {
+    packet->set_flag(SYN);
+    syn_rtx_++;
+    add_synack_options(*packet);
   }
   // If not, check if there is data and retransmit
-  else if(writeq.size()) {
+  else if(writeq.size())
+  {
     auto& buf = writeq.una();
-    debug2("<Connection::retransmit> With data (wq.sz=%u) buf.unacked=%u\n",
-      writeq.size(), buf.length() - buf.acknowledged);
-    fill_packet(*packet, buf.data() + writeq.acked(), buf.length() - writeq.acked());
+
+    // TODO: Finish to send window zero probe, but only on rtx timeout
+
+    //printf("<Connection::retransmit> With data (wq.sz=%zu) buf.size=%zu buf.unacked=%zu SND.WND=%u CWND=%u\n",
+    //       writeq.size(), buf->size(), buf->size() - writeq.acked(), cb.SND.WND, cb.cwnd);
+    fill_packet(*packet, buf->data() + writeq.acked(), buf->size() - writeq.acked());
+      packet->set_flag(PSH);
   }
-  rtx_attempt_++;
   packet->set_seq(cb.SND.UNA);
 
   /*
@@ -751,19 +1093,21 @@ void Connection::rtx_clear() {
        begins (i.e., after the three-way handshake completes).
 */
 void Connection::rtx_timeout() {
-  debug("<Connection::RTX@timeout> Timed out (RTO %lld ms). FS: %u\n",
-    rttm.rto_ms().count(), flight_size());
+  //printf("<Connection::RTX@timeout> Timed out (RTO %lld ms). FS: %u usable=%u\n",
+  //  rttm.rto_ms().count(), flight_size(), usable_window());
 
   signal_rtx_timeout();
   // experimental
   if(rto_limit_reached()) {
-    debug("<TCP::Connection::rtx_timeout> RTX attempt limit reached, closing.\n");
+    debug("<TCP::Connection::rtx_timeout> RTX attempt limit reached, closing. rtx=%u syn_rtx=%u\n",
+      rtx_attempt_, syn_rtx_);
     abort();
     return;
   }
 
   // retransmit SND.UNA
-  retransmit(); // increases rtx_attempt
+  retransmit();
+  rtx_attempt_++;
 
   // "back off" timer
   rttm.RTO *= 2.0;
@@ -841,6 +1185,7 @@ void Connection::timewait_restart() {
 void Connection::send_ack() {
   auto packet = outgoing_packet();
   packet->set_flag(ACK);
+  this->dack_ = 0;
   transmit(std::move(packet));
 }
 
@@ -855,7 +1200,30 @@ void Connection::start_dack()
   timewait_dack_timer.start(host_.DACK_timeout());
 }
 
-void Connection::signal_close() {
+void Connection::signal_connect(const bool success)
+{
+  // if read request was set before we got a seq number,
+  // update the starting sequence number for the read buffer
+  if(read_request and success)
+    read_request->set_start(cb.RCV.NXT);
+
+  if(on_connect_)
+    (success) ? on_connect_(retrieve_shared()) : on_connect_(nullptr);
+
+  // If no data event was registered we still want to start buffering here,
+  // in case the user is not yet ready to subscribe to data.
+  if (read_request == nullptr and success) {
+    read_request.reset(
+      new Read_request(this->cb.RCV.NXT, host_.min_bufsize(), host_.max_bufsize(), bufalloc.get()));
+  }
+}
+
+void Connection::signal_close()
+{
+  if(UNLIKELY(close_signaled_))
+    return;
+  close_signaled_ = true;
+
   debug("<Connection::signal_close> It's time to delete this connection. \n");
 
   // call user callback
@@ -871,43 +1239,41 @@ void Connection::clean_up() {
   if(timewait_dack_timer.is_running())
     timewait_dack_timer.stop();
 
-  // necessary to keep the shared_ptr alive during the whole function after _on_cleanup_ is called
-  // avoids connection being destructed before function is done
-  auto shared = retrieve_shared();
-  // clean up all other copies
-  // either in TCP::listeners_ (open) or Listener::syn_queue_ (half-open)
-  if(_on_cleanup_) _on_cleanup_(shared);
-
+  // make sure all our delegates are cleaned up (to avoid circular dependencies)
   on_connect_.reset();
   on_disconnect_.reset();
-  on_packet_dropped_.reset();
-  on_rtx_timeout_.reset();
   on_close_.reset();
-  read_request.clean_up();
-  _on_cleanup_.reset();
+  recv_wnd_getter.reset();
+  if(read_request) {
+    read_request->on_read_callback.reset();
+    read_request->on_data_callback.reset();
+  }
 
-  debug2("<Connection::clean_up> Succesfully cleaned up %s\n", to_string().c_str());
+
+  debug2("<Connection::clean_up> Call clean_up delg on %s\n", to_string().c_str());
+  // clean up all other copies
+  // either in TCP::listeners_ (open) or Listener::syn_queue_ (half-open)
+  if(_on_cleanup_)
+    _on_cleanup_(this);
+
+
+  // if someone put a copy in this delg its their problem..
+  //_on_cleanup_.reset();
+
+  debug2("<Connection::clean_up> Succesfully cleaned up\n");
 }
 
 std::string Connection::TCB::to_string() const {
-  ostringstream os;
-  os << "SND"
-     << " .UNA = " << SND.UNA
-     << " .NXT = " << SND.NXT
-     << " .WND = " << SND.WND
-     << " .UP = " << SND.UP
-     << " .WL1 = " << SND.WL1
-     << " .WL2 = " << SND.WL2
-     << " ISS = " << ISS
-     << "\n RCV"
-     << " .NXT = " << RCV.NXT
-     << " .WND = " << RCV.WND
-     << " .UP = " << RCV.UP
-     << " IRS = " << IRS;
-  return os.str();
+  char buffer[512];
+  int len = snprintf(buffer, sizeof(buffer),
+      "SND .UNA:%u .NXT:%u .WND:%u .UP:%u .WL1:%u .WL2:%u  ISS:%u\n"
+      "RCV .NXT:%u .WND:%u .UP:%u  IRS=%u",
+      SND.UNA, SND.NXT, SND.WND, SND.UP, SND.WL1, SND.WL2, ISS,
+      RCV.NXT, RCV.WND, RCV.UP, IRS);
+  return std::string(buffer, len);
 }
 
-void Connection::parse_options(const Packet& packet) {
+void Connection::parse_options(const Packet_view& packet) {
   debug("<TCP::parse_options> Parsing options. Offset: %u, Options: %u \n",
         packet.offset(), packet.tcp_options_length());
 
@@ -987,6 +1353,23 @@ void Connection::parse_options(const Packet& packet) {
       break;
     }
 
+    case Option::SACK_PERM:
+    {
+      if(UNLIKELY(option->length != sizeof(Option::opt_sack_perm)))
+          throw TCPBadOptionException{Option::SACK_PERM, "length != 2"};
+
+      if(UNLIKELY(!packet.isset(SYN)))
+        throw TCPBadOptionException{Option::SACK_PERM, "Non-SYN packet"};
+
+      if(host_.uses_SACK())
+      {
+        sack_perm = true;
+      }
+
+      opt += option->length;
+      break;
+    }
+
     default:
       opt += option->length;
       break;
@@ -994,12 +1377,12 @@ void Connection::parse_options(const Packet& packet) {
   }
 }
 
-void Connection::add_option(Option::Kind kind, Packet& packet) {
+void Connection::add_option(Option::Kind kind, Packet_view& packet) {
 
   switch(kind) {
 
   case Option::MSS: {
-    packet.add_tcp_option<Option::opt_mss>(host_.MSS());
+    packet.add_tcp_option<Option::opt_mss>(MSS());
     debug2("<TCP::Connection::add_option@Option::MSS> Packet: %s - MSS: %u\n",
            packet.to_string().c_str(), ntohs(*(uint16_t*)(packet.tcp_options()+2)));
     break;
@@ -1015,19 +1398,61 @@ void Connection::add_option(Option::Kind kind, Packet& packet) {
     packet.add_tcp_option<Option::opt_ts>(host_.get_ts_value(), ts_ecr);
     break;
   }
+
+  case Option::SACK_PERM: {
+    packet.add_tcp_option<Option::opt_sack_perm>();
+    break;
+  }
   default:
     break;
   }
 }
 
-Option::opt_ts* Connection::parse_ts_option(const Packet& packet) const
+void Connection::add_syn_options(Packet_view& packet)
 {
-  auto* opt = packet.tcp_options();
+  Expects(packet.isset(SYN));
+  Expects(not packet.isset(ACK));
+  // Always MSS
+  add_option(Option::MSS, packet);
 
-  while(((Option*)opt)->kind == Option::NOP and opt < (uint8_t*)packet.tcp_data())
-    opt++;
+  // Window scaling
+  if(uses_window_scaling())
+  {
+    add_option(Option::WS, packet);
+    //packet.set_win(std::min((uint32_t)default_window_size, cb.RCV.WND));
+  }
+  // Add timestamps
+  if(uses_timestamps())
+  {
+    add_option(Option::TS, packet);
+  }
+  // Use SACK
+  if(uses_SACK())
+  {
+    add_option(Option::SACK_PERM, packet);
+  }
+}
 
-  return (((Option*)opt)->kind == Option::TS) ? (Option::opt_ts*)opt : nullptr;
+void Connection::add_synack_options(Packet_view& packet)
+{
+  Expects(packet.isset(SYN));
+  Expects(packet.isset(ACK));
+  // Always MSS
+  add_option(Option::MSS, packet);
+
+  // This means WS was accepted in the SYN packet
+  if(cb.SND.wind_shift > 0)
+  {
+    add_option(Option::WS, packet);
+    packet.set_win(std::min((uint32_t)default_window_size, cb.RCV.WND));
+  }
+  // SACK permitted
+  if(sack_perm == true)
+  {
+    add_option(Option::SACK_PERM, packet);
+  }
+
+  // NOTE: Timestamp is already handled by create_outgoing_packet
 }
 
 bool Connection::uses_window_scaling() const noexcept
@@ -1040,9 +1465,15 @@ bool Connection::uses_timestamps() const noexcept
   return host_.uses_timestamps();
 }
 
-void Connection::drop(const Packet& packet, Drop_reason reason)
+bool Connection::uses_SACK() const noexcept
 {
-  signal_packet_dropped(packet, reason);
+  return host_.uses_SACK();
+}
+
+void Connection::drop(const Packet_view& packet, [[maybe_unused]]Drop_reason reason)
+{
+  /*printf("Drop %s %#.x RCV.WND: %u RCV.NXT %u alloc free: %zu flight size: %u SND.WND: %u \n",
+    packet.to_string().c_str(), reason, cb.RCV.WND, cb.RCV.NXT, bufalloc->allocatable(), flight_size(), cb.SND.WND);*/
   host_.drop(packet);
 }
 
@@ -1060,12 +1491,12 @@ void Connection::reduce_ssthresh() {
     fs = (fs >= two_seg) ? fs - two_seg : 0;
 
   cb.ssthresh = std::max( (fs / 2), two_seg );
-  debug2("<TCP::Connection::reduce_ssthresh> Slow start threshold reduced: %u\n",
-    cb.ssthresh);
+  //printf("<TCP::Connection::reduce_ssthresh> Slow start threshold reduced: %u\n",
+  //  cb.ssthresh);
 }
 
 void Connection::fast_retransmit() {
-  debug("<TCP::Connection::fast_retransmit> Fast retransmit initiated.\n");
+  //printf("<TCP::Connection::fast_retransmit> Fast retransmit initiated.\n");
   // reduce sshtresh
   reduce_ssthresh();
   // retransmit segment starting SND.UNA
@@ -1080,5 +1511,5 @@ void Connection::finish_fast_recovery() {
   fast_recovery_ = false;
   //cb.cwnd = std::min(cb.ssthresh, std::max(flight_size(), (uint32_t)SMSS()) + SMSS());
   cb.cwnd = cb.ssthresh;
-  debug("<TCP::Connection::finish_fast_recovery> Finished Fast Recovery - Cwnd: %u\n", cb.cwnd);
+  //printf("<TCP::Connection::finish_fast_recovery> Finished Fast Recovery - Cwnd: %u\n", cb.cwnd);
 }

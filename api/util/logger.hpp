@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef UTIL_LOGGER_HPP
@@ -105,21 +89,21 @@ private:
     constexpr iterator& operator++() noexcept
     {
       //Expects(span_ && index_ >= 0);
-      index_ = (index_ < span_->length()-1) ? index_+1 : 0;
+      index_ = (index_ < span_->size()-1) ? index_+1 : 0;
       return *this;
     }
 
     constexpr iterator& operator--() noexcept
     {
-      //Expects(span_ && index_ < span_->length());
-      index_ = (index_ > 0) ? index_-1 : span_->length()-1;
+      //Expects(span_ && index_ < span_->size());
+      index_ = (index_ > 0) ? index_-1 : span_->size()-1;
       return *this;
     }
 
     constexpr iterator& operator+=(difference_type n) noexcept
     {
       //Expects(span_);
-      index_ = (index_ + n < span_->length()) ? index_ + n : std::abs((n - ((span_->length()) - index_)) % span_->length());
+      index_ = (index_ + n < span_->size()) ? index_ + n : std::abs((n - ((span_->size()) - index_)) % span_->size());
       return *this;
     }
 
@@ -136,4 +120,3 @@ private:
 }; // << class Logger
 
 #endif
-

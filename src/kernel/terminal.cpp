@@ -1,80 +1,30 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
+#include <net/ip4/ip4.hpp>
+#include <net/ip6/ip6.hpp>
+#include <net/inet>
 #include <kernel/terminal.hpp>
-#include <net/inet4>
-
-#include <vector>
-#include <serial>
+#include <os.hpp>
 #include <cstdio>
+#include <deque>
 
-Terminal::Terminal()
-  : iac(false), newline(false), subcmd(0)
+static std::unordered_map<std::string, TerminalProgram> command_registry;
+void Terminal::register_program(std::string name, TerminalProgram program)
 {
-  add_basic_commands();
+  command_registry.emplace(
+          std::piecewise_construct,
+          std::forward_as_tuple(name),
+          std::forward_as_tuple(program.desc, std::move(program.main)));
 }
 
 Terminal::Terminal(Connection_ptr csock)
-  : Terminal()
+  : stream(std::move(csock))
 {
-  csock->on_read(1024, [this](auto buffer, size_t n) {
-    this->read((char*)buffer.get(), n);
+  register_basic_commands();
+
+  stream->on_read(1024, [this](auto buffer) {
+    this->read((char*) buffer->data(), buffer->size());
   });
 
-  on_write =
-  [csock] (const char* buffer, size_t len) {
-    csock->write(buffer, len);
-  };
-
-  on_exit =
-  [csock] {
-    csock->close();
-  };
-  // after setting up everything, show introduction
-  intro();
-}
-
-Terminal::Terminal(hw::Serial& serial)
-  : Terminal()
-{
-  serial.on_data(
-  [this, &serial] (char c)
-  {
-    this->read(&c, 1);
-    if (c == CR) {
-      c = LF;
-      this->read(&c, 1);
-    }
-    else {
-      serial.write(c);
-    }
-  });
-
-  on_write =
-    [&serial] (const char* buffer, size_t len)
-    {
-      for (size_t i = 0; i < len; i++)
-        serial.write(buffer[i]);
-    };
-
-  on_exit =
-    [] {
-    // do nothing
-  };
   // after setting up everything, show introduction
   intro();
 }
@@ -97,8 +47,10 @@ void Terminal::read(const char* buf, size_t len)
     else if (*buf == 10 && newline) {
       newline = false;
       // parse message
-      run(buffer);
+      exec(buffer);
       buffer.clear();
+      // show prompt again
+      prompt();
     }
     else if (*buf == 0) {
       // NOP
@@ -164,7 +116,7 @@ split(const std::string& text, std::string& command)
   if (text.empty()) return retv;
   // extract command
   {
-    x = text.find(" ");
+    x = text.find(' ');
     // early return for cmd-only msg
     if (x == std::string::npos)
     {
@@ -177,8 +129,8 @@ split(const std::string& text, std::string& command)
   }
   // parse remainder
   do {
-    x = text.find(" ", p+1);
-    size_t y = text.find(":", x+1); // find last param
+    x = text.find(' ', p+1);
+    size_t y = text.find(':', x+1); // find last param
 
     if (y == x+1) {
       // single argument
@@ -202,50 +154,51 @@ split(const std::string& text, std::string& command)
   return retv;
 }
 
-void Terminal::run(const std::string& cmd_string)
+int Terminal::exec(const std::string& cmd_string)
 {
   std::string cmd_name;
   auto cmd_vec = split(cmd_string, cmd_name);
-  if (cmd_name.size())
-  {
-    printf("Terminal::run(): %s\n", cmd_name.c_str());
+  if (cmd_name.empty()) return -1;
 
-    auto it = commands.find(cmd_name);
-    if (it != commands.end()) {
-      int retv = it->second.main(cmd_vec);
-      if (retv) write("%s returned: %d\r\n", cmd_name.c_str(), retv);
-    }
-    else {
-      write("No such command: '%s'\r\n", cmd_name.c_str());
-    }
+  auto it = command_registry.find(cmd_name);
+  if (it != command_registry.end()) {
+    int retv = it->second.main(*this, cmd_vec);
+    if (retv) write("%s returned: %d\r\n", cmd_name.c_str(), retv);
+    return retv;
   }
-  prompt();
+  write("No such command: '%s'\r\n", cmd_name.c_str());
+  return -1;
 }
 
-void Terminal::add_basic_commands()
+void Terminal::close()
 {
-  // ?:
-  add("?", "List available commands",
-  [this] (const std::vector<std::string>&) -> int
-  {
-    for (auto cmd : this->commands)
-    {
-      write("%s \t-- %s\r\n", cmd.first.c_str(), cmd.second.desc.c_str());
-    }
-    return 0;
-  });
+  stream->close();
+}
+
+static int send_help(Terminal& term, const std::vector<std::string>&)
+{
+  for (auto cmd : command_registry) {
+    term.write("%s \t-- %s\r\n", cmd.first.c_str(), cmd.second.desc.c_str());
+  }
+  return 0;
+}
+
+void Terminal::register_basic_commands()
+{
+  register_program("?", {"List available commands", send_help});
+  register_program("help", {"List available commands", send_help});
   // exit:
-  add("exit", "Close the terminal",
-  [this] (const std::vector<std::string>&) -> int
+  register_program("exit", {"Close the terminal",
+  [] (Terminal& term, const std::vector<std::string>&) -> int
   {
-    this->on_exit();
+    term.close();
     return 0;
-  });
+  }});
 
 }
 void Terminal::intro()
 {
-  std::string banana =
+  const std::string banana =
     R"baaa(
      ____                           ___
     |  _ \  ___              _   _.' _ `.
@@ -261,14 +214,14 @@ void Terminal::intro()
      "-:;::;:;:      ':;::;:''     ;.-'
          ""`---...________...---'""
 
-> Banana Terminal v1 <
+> Banana Terminal v2 <
 )baaa";
 
-  write("%s", banana.c_str());
+  stream->write(banana);
   prompt();
 }
 
 void Terminal::prompt()
 {
-  write("%s", "$ ");
+  stream->write("$ ");
 }

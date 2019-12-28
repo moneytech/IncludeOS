@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef NET_IP4_ARP_HPP
@@ -34,8 +18,8 @@ namespace net {
 
   public:
     using Stack   = IP4::Stack;
-    using Route_checker = delegate<bool(IP4::addr)>;
-    using Arp_resolver = delegate<void(IP4::addr)>;
+    using Route_checker = delegate<bool(ip4::Addr)>;
+    using Arp_resolver = delegate<void(ip4::Addr)>;
 
     enum Opcode { H_request = 0x100, H_reply = 0x200 };
 
@@ -43,6 +27,9 @@ namespace net {
     static constexpr uint16_t H_htype_eth {0x0100};
     static constexpr uint16_t H_ptype_ip4 {0x0008};
     static constexpr uint16_t H_hlen_plen {0x0406};
+
+    /** Number of resolution retries **/
+    static constexpr int arp_retries = 3;
 
     /** Constructor */
     explicit Arp(Stack&) noexcept;
@@ -53,9 +40,9 @@ namespace net {
       uint16_t         hlen_plen; // Protocol address length
       uint16_t         opcode;    // Opcode
       MAC::Addr     shwaddr;   // Source mac
-      IP4::addr        sipaddr;   // Source ip
+      ip4::Addr        sipaddr;   // Source ip
       MAC::Addr     dhwaddr;   // Target mac
-      IP4::addr        dipaddr;   // Target ip
+      ip4::Addr        dipaddr;   // Target ip
     };
 
     /** Handle incoming ARP packet. */
@@ -81,10 +68,10 @@ namespace net {
     { linklayer_out_ = link; }
 
     /** Downstream transmission. */
-    void transmit(Packet_ptr, IP4::addr next_hop);
+    void transmit(Packet_ptr, ip4::Addr next_hop);
 
     /** Cache IP resolution. */
-    void cache(IP4::addr, MAC::Addr);
+    void cache(ip4::Addr, MAC::Addr);
 
     /** Flush the ARP cache. RFC-2.3.2.1 */
     void flush_cache()
@@ -132,8 +119,17 @@ namespace net {
       RTC::timestamp_t timestamp_;
     }; //< struct Cache_entry
 
-    using Cache       = std::unordered_map<IP4::addr, Cache_entry>;
-    using PacketQueue = std::unordered_map<IP4::addr, Packet_ptr>;
+    struct Queue_entry {
+      Packet_ptr pckt;
+      int tries_remaining = arp_retries;
+
+      Queue_entry(Packet_ptr p)
+        : pckt{std::move(p)}
+      {}
+    };
+
+    using Cache       = std::unordered_map<ip4::Addr, Cache_entry>;
+    using PacketQueue = std::unordered_map<ip4::Addr, Queue_entry>;
 
 
     /** Stats */
@@ -166,10 +162,10 @@ namespace net {
     Arp_resolver arp_resolver_ = {this, &Arp::arp_resolve};
 
     /** Respond to arp request */
-    void arp_respond(header* hdr_in, IP4::addr ack_ip);
+    void arp_respond(header* hdr_in, ip4::Addr ack_ip);
 
     /** Send an arp resolution request */
-    void arp_resolve(IP4::addr next_hop);
+    void arp_resolve(ip4::Addr next_hop);
 
     /**
      * Add a packet to waiting queue, to be sent when IP is resolved.
@@ -178,7 +174,7 @@ namespace net {
      * 2.3.2.1 : Prevent ARP flooding
      * 2.3.2.2 : Packets SHOULD be queued.
      */
-    void await_resolution(Packet_ptr, IP4::addr);
+    void await_resolution(Packet_ptr, ip4::Addr);
 
     /** Create a default initialized ARP-packet */
     Packet_ptr create_packet();

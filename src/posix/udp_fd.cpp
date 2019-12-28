@@ -1,27 +1,19 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
-#include <udp_fd.hpp>
-#include <kernel/irq_manager.hpp>
-#include <kernel/os.hpp> // OS::block()
+#include <posix/udp_fd.hpp>
+#include <os.hpp> // os::block()
+#include <errno.h>
+#include <net/interfaces.hpp>
+
+//#define POSIX_STRACE 1
+#ifdef POSIX_STRACE
+#define PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+#define PRINT(fmt, ...) /* fmt */
+#endif
 
 // return the "currently selected" networking stack
-static net::Inet<net::IP4>& net_stack() {
-  return net::Inet4::stack<> ();
+static net::Inet& net_stack() {
+  return net::Interfaces::get(0);
 }
 
 size_t UDP_FD::max_buffer_msgs() const
@@ -29,16 +21,15 @@ size_t UDP_FD::max_buffer_msgs() const
   return (rcvbuf_ / net_stack().udp().max_datagram_size());
 }
 
-void UDP_FD::recv_to_buffer(net::UDPSocket::addr_t addr,
-  net::UDPSocket::port_t port, const char* buf, size_t len)
+void UDP_FD::recv_to_buffer(net::udp::addr_t addr,
+  net::udp::port_t port, const char* buf, size_t len)
 {
   // only recv to buffer if not full
   if(buffer_.size() < max_buffer_msgs()) {
     // copy data into to-be Message buffer
-    auto data = std::unique_ptr<char>(new char[len]);
-    memcpy(data.get(), buf, len);
+    auto buff = net::tcp::construct_buffer(buf, buf + len);
     // emplace the message in buffer
-    buffer_.emplace_back(htonl(addr.whole), htons(port), std::move(data), len);
+    buffer_.emplace_back(htonl(addr.v4().whole), htons(port), std::move(buff));
   }
 }
 
@@ -48,11 +39,10 @@ int UDP_FD::read_from_buffer(void* buffer, size_t len, int flags,
   assert(!buffer_.empty() && "Trying to read from empty buffer");
 
   auto& msg = buffer_.front();
-  auto& data = msg.data;
+  auto& mbuf = msg.buffer;
 
-  int bytes = std::min(len, msg.len);
-
-  memcpy(buffer, data.get(), bytes);
+  int bytes = std::min(len, mbuf->size());
+  memcpy(buffer, mbuf->data(), bytes);
 
   if(address != nullptr) {
     memcpy(address, &msg.src, std::min(*address_len, (uint32_t) sizeof(struct sockaddr_in)));
@@ -73,9 +63,9 @@ UDP_FD::~UDP_FD()
 {
   // shutdown underlying socket, makes sure no callbacks are called on dead fd
   if(this->sock)
-    sock->udp().close(sock->local_port());
+    sock->close();
 }
-int UDP_FD::read(void* buffer, size_t len)
+ssize_t UDP_FD::read(void* buffer, size_t len)
 {
   return recv(buffer, len, 0);
 }
@@ -85,19 +75,17 @@ int UDP_FD::write(const void* buffer, size_t len)
 }
 int UDP_FD::close()
 {
-  return -1;
+  return 0;
 }
-int UDP_FD::bind(const struct sockaddr* address, socklen_t len)
+long UDP_FD::bind(const struct sockaddr* address, socklen_t len)
 {
   // we can assume this has already been bound since there is a pointer
   if(UNLIKELY(this->sock != nullptr)) {
-    errno = EINVAL;
-    return -1;
+    return -EINVAL;
   }
   // invalid address
   if(UNLIKELY(len != sizeof(struct sockaddr_in))) {
-    errno = EINVAL;
-    return -1;
+    return -EINVAL;
   }
   // Bind
   const auto port = ((sockaddr_in*)address)->sin_port;
@@ -106,20 +94,18 @@ int UDP_FD::bind(const struct sockaddr* address, socklen_t len)
   {
     this->sock = (port) ? &udp.bind(ntohs(port)) : &udp.bind();
     set_default_recv();
+    PRINT("UDP: bind(%s)\n", sock->local().to_string().c_str());
     return 0;
   }
   catch(const net::UDP::Port_in_use_exception&)
   {
-    errno = EADDRINUSE;
-    return -1;
+    return -EADDRINUSE;
   }
 }
-int UDP_FD::connect(const struct sockaddr* address, socklen_t address_len)
+long UDP_FD::connect(const struct sockaddr* address, socklen_t address_len)
 {
-  // The specified address is not a valid address for the address family of the specified socket.
-  if(UNLIKELY(address_len != sizeof(struct sockaddr_in))) {
-    errno = EINVAL;
-    return -1;
+  if (UNLIKELY(address_len < sizeof(struct sockaddr_in))) {
+    return -EINVAL;
   }
 
   // If the socket has not already been bound to a local address,
@@ -141,52 +127,53 @@ int UDP_FD::connect(const struct sockaddr* address, socklen_t address_len)
     peer_.sin_addr   = addr.sin_addr;
     peer_.sin_port   = addr.sin_port;
   }
+  PRINT("UDP: connect(%s:%u)\n",
+        net::IP4::addr(peer_.sin_addr.s_addr).to_string().c_str(),
+        htons(peer_.sin_port));
 
   return 0;
-}
-ssize_t UDP_FD::send(const void* message, size_t len, int flags)
-{
-  if(!is_connected()) {
-    errno = EDESTADDRREQ;
-    return -1;
-  }
-
-  return sendto(message, len, flags, (struct sockaddr*)&peer_, sizeof(peer_));
 }
 
 ssize_t UDP_FD::sendto(const void* message, size_t len, int,
   const struct sockaddr* dest_addr, socklen_t dest_len)
 {
-  // The specified address is not a valid address for the address family of the specified socket.
-  if(UNLIKELY(dest_len != sizeof(struct sockaddr_in))) {
-    errno = EINVAL;
-    return -1;
+  if(not is_connected())
+  {
+    if(UNLIKELY((dest_addr == nullptr or dest_len == 0))) {
+      return -EDESTADDRREQ;
+    }
+    // The specified address is not a valid address for the address family of the specified socket.
+    else if(UNLIKELY(dest_len != sizeof(struct sockaddr_in))) {
+      return -EAFNOSUPPORT;
+    }
   }
+
   // Bind a socket if we dont already have one
   if(this->sock == nullptr) {
     this->sock = &net_stack().udp().bind();
     set_default_recv();
   }
-  const auto& dest = *((sockaddr_in*)dest_addr);
+  const auto& dest = (not is_connected()) ? *((sockaddr_in*)dest_addr) : peer_;
   // If the socket protocol supports broadcast and the specified address
   // is a broadcast address for the socket protocol,
   // sendto() shall fail if the SO_BROADCAST option is not set for the socket.
   if(!broadcast_ && dest.sin_addr.s_addr == INADDR_BROADCAST) { // Fix me
-    return -1;
+    return -EOPNOTSUPP;
   }
 
   // Sending
   bool written = false;
-  this->sock->sendto(ntohl(dest.sin_addr.s_addr), ntohs(dest.sin_port), message, len,
+  this->sock->sendto(net::ip4::Addr{ntohl(dest.sin_addr.s_addr)}, ntohs(dest.sin_port), message, len,
     [&written]() { written = true; });
 
   while(!written)
-    OS::block();
+    os::block();
 
   return len;
 }
 ssize_t UDP_FD::recv(void* buffer, size_t len, int flags)
 {
+  PRINT("UDP: recv(%lu, %x)\n", len, flags);
   return recvfrom(buffer, len, flags, nullptr, 0);
 }
 ssize_t UDP_FD::recvfrom(void *__restrict__ buffer, size_t len, int flags,
@@ -208,10 +195,10 @@ ssize_t UDP_FD::recvfrom(void *__restrict__ buffer, size_t len, int flags,
     int bytes = 0;
     bool done = false;
 
-    this->sock->on_read(net::UDPSocket::recvfrom_handler::make_packed(
+    this->sock->on_read(net::udp::Socket::recvfrom_handler::make_packed(
     [&bytes, &done, this,
       buffer, len, flags, address, address_len]
-    (net::UDPSocket::addr_t addr, net::UDPSocket::port_t port,
+    (net::udp::addr_t addr, net::udp::port_t port,
       const char* data, size_t data_len)
     {
       // if this already been called once while blocking, buffer
@@ -229,7 +216,7 @@ ssize_t UDP_FD::recvfrom(void *__restrict__ buffer, size_t len, int flags,
         auto& sender = *((sockaddr_in*)address);
         sender.sin_family       = AF_INET;
         sender.sin_port         = htons(port);
-        sender.sin_addr.s_addr  = htonl(addr.whole);
+        sender.sin_addr.s_addr  = htonl(addr.v4().whole);
         *address_len            = sizeof(struct sockaddr_in);
       }
       done = true;
@@ -241,7 +228,7 @@ ssize_t UDP_FD::recvfrom(void *__restrict__ buffer, size_t len, int flags,
 
     // Block until (any) data is read
     while(!done)
-      OS::block();
+      os::block();
 
     set_default_recv();
 
@@ -251,6 +238,7 @@ ssize_t UDP_FD::recvfrom(void *__restrict__ buffer, size_t len, int flags,
 int UDP_FD::getsockopt(int level, int option_name,
   void *option_value, socklen_t *option_len)
 {
+  PRINT("UDP: getsockopt(%d, %d)\n", level, option_name);
   if(level != SOL_SOCKET)
     return -1;
 
@@ -324,6 +312,7 @@ int UDP_FD::getsockopt(int level, int option_name,
 int UDP_FD::setsockopt(int level, int option_name,
   const void *option_value, socklen_t option_len)
 {
+  PRINT("UDP: setsockopt(%d, %d, ... %d)\n", level, option_name, option_len);
   if(level != SOL_SOCKET)
     return -1;
 
@@ -359,19 +348,4 @@ int UDP_FD::setsockopt(int level, int option_name,
     default:
       return -1;
   } // < switch(option_name)
-}
-
-/// socket default handler getters
-
-UDP_FD::on_read_func UDP_FD::get_default_read_func()
-{
-  return [] (net::tcp::buffer_t, size_t) {};
-}
-UDP_FD::on_write_func UDP_FD::get_default_write_func()
-{
-  return [] {};
-}
-UDP_FD::on_except_func UDP_FD::get_default_except_func()
-{
-  return [] {};
 }

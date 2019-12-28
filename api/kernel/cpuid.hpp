@@ -1,26 +1,14 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef KERNEL_CPUID_HPP
 #define KERNEL_CPUID_HPP
 
+#include <unordered_map>
+#include <vector>
+
 namespace CPUID
 {
+
   enum class Feature
   {
     // ------------------------------------------------------------------------
@@ -46,7 +34,7 @@ namespace CPUID
     SSE4_1,            // Streaming SIMD Extensions 4.1
     SSE4_2,            // Streaming SIMD Extensions 4.2
     X2APIC,            // Extended xAPIC Support
-    MOVBE,             // MOVBE Instruction
+    MOVBE,             // MOVBE Instruction (move after swapping bytes)
     POPCNT,            // POPCNT Instruction
     TSC_DEADLINE,      // Local APIC supports TSC Deadline
     AES,               // AESNI Instruction
@@ -55,6 +43,7 @@ namespace CPUID
     AVX,               // AVX Instructions
     F16C,              // 16-bit Floating Point Instructions
     RDRAND,            // RDRAND Instruction
+    RDSEED,            // RDSEED Instruction
 
     FPU,               // Floating-Point Unit On-Chip
     VME,               // Virtual 8086 Mode Extensions
@@ -98,23 +87,38 @@ namespace CPUID
     SVM,               // Secture Virtual Machines (AMD-V)
                        // aka. AMD-V (AMD's virtualization extension)
     SSE4A,             // SSE4a
+
+    // ------------------------------------------------------------------------
+    // 4th gen. Core features
+    // ------------------------------------------------------------------------
+    AVX2,              // AVX2
+    BMI1,              // Bit manipulation 1
+    BMI2,              // Bit manipulation 2
+    LZCNT,             // Count leading zero bits
+
+    TSC_INV,           // Invariant TSC
   };
+
+  std::vector<const char*> detect_features_str();
+  std::vector<Feature>     detect_features();
 
   bool is_amd_cpu()   noexcept;
   bool is_intel_cpu() noexcept;
   bool has_feature(Feature f);
 
-  bool kvm_feature(unsigned id) noexcept;
+  bool kvm_feature(unsigned mask) noexcept;
 } //< CPUID
 
-#define KVM_FEATURE_CLOCKSOURCE   0
-#define KVM_FEATURE_NOP_IO_DELAY  1
-#define KVM_FEATURE_MMU_OP        2   /* deprecated */
-#define KVM_FEATURE_CLOCKSOURCE2  3
-#define KVM_FEATURE_ASYNC_PF      4
-#define KVM_FEATURE_STEAL_TIME    5
-#define KVM_FEATURE_PV_EOI        6
-#define KVM_FEATURE_PV_UNHALT     7
+
+
+#define KVM_FEATURE_CLOCKSOURCE   0x1
+#define KVM_FEATURE_NOP_IO_DELAY  0x2
+#define KVM_FEATURE_MMU_OP        0x4   /* deprecated */
+#define KVM_FEATURE_CLOCKSOURCE2  0x8
+#define KVM_FEATURE_ASYNC_PF      0x10
+#define KVM_FEATURE_STEAL_TIME    0x20
+#define KVM_FEATURE_PV_EOI        0x40
+#define KVM_FEATURE_PV_UNHALT     0x80
 #define KVM_FEATURE_CLOCKSOURCE_STABLE_BIT 24
 
 #endif //< KERNEL_CPUID_HPP

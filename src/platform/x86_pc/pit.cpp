@@ -1,26 +1,10 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include "pit.hpp"
 #include "cpu_freq_sampling.hpp"
 #include <hw/ioport.hpp>
-#include <kernel/os.hpp>
-#include <kernel/irq_manager.hpp>
-#include <kernel/syscalls.hpp>
+#include <os.hpp>
+#include <kernel/events.hpp>
+#include <kernel/rtc.hpp>
 //#undef NO_DEBUG
 #define DEBUG
 #define DEBUG2
@@ -28,6 +12,14 @@
 // Used for cpu frequency sampling
 extern const uint16_t _cpu_sampling_freq_divider_;
 using namespace std::chrono;
+
+// Used by blocking_cycle() to block until one interrupt happens
+extern "C" void blocking_cycle_irq_entry();
+static int blocking_cycle_done = 0;
+extern "C"
+void blocking_cycle_irq_handler() {
+  blocking_cycle_done++;
+}
 
 namespace x86
 {
@@ -53,10 +45,8 @@ namespace x86
     auto temp_mode     = get().current_mode_;
     auto temp_freq_div = get().current_freq_divider_;
 
-    auto prev_irq_handler = IRQ_manager::get().get_irq_handler(0);
-
     debug("<CPU frequency> Measuring...\n");
-    IRQ_manager::get().set_irq_handler(0, cpu_sampling_irq_entry);
+    __arch_install_irq(0, cpu_sampling_irq_entry);
 
     // GO!
     get().set_mode(RATE_GEN);
@@ -70,13 +60,34 @@ namespace x86
     get().set_mode(temp_mode);
     get().set_freq_divider(temp_freq_div);
 
-    IRQ_manager::get().set_irq_handler(0, prev_irq_handler);
+    __arch_subscribe_irq(0);
     return freq;
   }
 
-  static inline milliseconds now() noexcept
+  void PIT::blocking_cycles(int total)
   {
-    return duration_cast<milliseconds> (microseconds(OS::micros_since_boot()));
+    // Save PIT-state
+    auto temp_mode     = get().current_mode_;
+    auto temp_freq_div = get().current_freq_divider_;
+
+    blocking_cycle_done = 0;
+    __arch_install_irq(0, blocking_cycle_irq_entry);
+    // GO!
+    get().set_mode(RATE_GEN);
+    get().set_freq_divider(MILLISEC_INTERVAL);
+
+    while (blocking_cycle_done < total) {
+      asm("hlt");
+    }
+
+    get().set_mode(temp_mode);
+    get().set_freq_divider(temp_freq_div);
+    __arch_subscribe_irq(0);
+  }
+
+  static inline auto now() noexcept
+  {
+    return duration_cast<nanoseconds> (nanoseconds(RTC::nanos_now()));
   }
 
   void PIT::oneshot(milliseconds timeval, timeout_handler handler)
@@ -90,7 +101,7 @@ namespace x86
     if (forever) {
       get().forev_handler = handler;
     } else {
-      get().expiration    = now() + timeval;
+      get().expiration    = now() + duration_cast<nanoseconds>(timeval);
       get().handler       = handler;
     }
   }
@@ -113,8 +124,6 @@ namespace x86
 
   void PIT::irq_handler()
   {
-    IRQ_counter ++;
-
     if (now() >= this->expiration)
     {
       if (this->handler) {
@@ -134,13 +143,12 @@ namespace x86
 
   PIT::PIT()
   {
-    debug("<PIT> Initializing @ frequency: %16.16f MHz. Assigning myself to all timer interrupts.\n ", frequency().count());
+    debug("<PIT> Initializing @ frequency: %f MHz.\n ", frequency().count());
     PIT::disable_regular_interrupts();
     // must be done to program IOAPIC to redirect to BSP LAPIC
-    IRQ_manager::get().enable_irq(0);
+    __arch_enable_legacy_irq(0);
     // register irq handler
-    auto handler(IRQ_manager::irq_delegate{this, &PIT::irq_handler});
-    IRQ_manager::get().subscribe(0, handler);
+    Events::get().subscribe(0, {this, &PIT::irq_handler});
   }
 
   void PIT::set_mode(Mode mode)
@@ -174,3 +182,8 @@ namespace x86
   }
 
 } //< x86
+
+void __arch_preempt_forever(void(*func)())
+{
+  x86::PIT::forever(func);
+}

@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef X86_XAPIC_HPP
@@ -21,8 +5,8 @@
 
 #include "apic_iface.hpp"
 #include "apic_regs.hpp"
-#include "cpu.hpp"
-#include <kernel/irq_manager.hpp>
+#include <arch/x86/cpu.hpp>
+#include <kernel/events.hpp>
 #include <debug>
 #include <info>
 
@@ -61,7 +45,7 @@ namespace x86 {
   struct xapic : public IApic
   {
     static const uint32_t MSR_ENABLE_XAPIC   = 0x800;
-    static const uint8_t  SPURIOUS_INTR = IRQ_manager::INTR_LINES-1;
+    static const uint8_t  SPURIOUS_INTR = IRQ_BASE + Events::NUM_EVENTS-1;
 
     xapic() {
       // read xAPIC base address from masked out MSR
@@ -74,15 +58,15 @@ namespace x86 {
       CPU::write_msr(IA32_APIC_BASE_MSR, this->base_msr);
       // verify that xAPIC is online
       uint64_t verify = CPU::read_msr(IA32_APIC_BASE_MSR);
-      assert(verify & MSR_ENABLE_XAPIC);
+      Expects(verify & MSR_ENABLE_XAPIC);
       INFO2("ID: %x  Ver: %x", get_id(), version());
     }
 
-    uint32_t read(uint32_t reg) noexcept override
+    uint32_t read(uint32_t reg) noexcept
     {
       return *(volatile uint32_t*) (regbase + reg);
     }
-    void write(uint32_t reg, uint32_t value) noexcept override
+    void write(uint32_t reg, uint32_t value) noexcept
     {
       *(volatile uint32_t*) (regbase + reg) = value;
     }
@@ -133,21 +117,33 @@ namespace x86 {
     {
       write(xAPIC_EOI, 0);
     }
-    uint8_t get_isr() noexcept override
+    int get_isr() noexcept override
     {
       for (int i = 5; i >= 1; i--) {
         uint32_t reg = read(xAPIC_ISR + 0x10 * i);
         if (reg) return 32 * i + __builtin_ffs(reg) - 1;
       }
-      return 159;
+      return -1;
     }
-    uint8_t get_irr() noexcept override
+    int get_irr() noexcept override
     {
-      for (int i = 5; i >= 1; i--) {
+      for (int i = 5; i >= 0; i--) {
         uint32_t reg = read(xAPIC_IRR + 0x10 * i);
         if (reg) return 32 * i + __builtin_ffs(reg) - 1;
       }
-      return 159;
+      return -1;
+    }
+    static uint32_t get_isr_at(int index) noexcept
+    {
+      return *(volatile uint32_t*) uintptr_t(0xfee00000 + xAPIC_ISR + 0x10 * index);
+    }
+    static std::array<uint32_t, 6> get_isr_array() noexcept
+    {
+      std::array<uint32_t, 6> isr_array;
+      for (int i = 1; i < 6; i++) {
+        isr_array[i] = get_isr_at(i);
+      }
+      return isr_array;
     }
 
     void ap_init(int id) noexcept override
@@ -185,14 +181,14 @@ namespace x86 {
       write(xAPIC_ICRL, ICR_ALL_EXCLUDING_SELF | ICR_ASSERT | vector);
     }
 
-    void timer_init() noexcept override
+    void timer_init(const uint8_t timer_intr) noexcept override
     {
       static const uint32_t TIMER_ONESHOT = 0x0;
       // decrement every other tick
       write(xAPIC_TMRDIV, 0x1);
       // start in one-shot mode and set the interrupt vector
       // but also disable interrupts
-      write(xAPIC_LVT_TMR, TIMER_ONESHOT | (32+LAPIC_IRQ_TIMER) | INTR_MASK);
+      write(xAPIC_LVT_TMR, TIMER_ONESHOT | (32+timer_intr) | INTR_MASK);
     }
     void timer_begin(uint32_t value) noexcept override
     {

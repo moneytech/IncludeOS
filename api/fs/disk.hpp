@@ -1,49 +1,30 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #pragma once
 #ifndef FS_DISK_HPP
 #define FS_DISK_HPP
 
 #include "common.hpp"
-#include <fs/filesystem.hpp>
-#include <fs/dirent.hpp>
+#include "dirent.hpp"
+#include "filesystem.hpp"
+#include "partition.hpp"
+#include <common>
 #include <hw/block_device.hpp>
-
 #include <deque>
 #include <vector>
-#include <functional>
 
-namespace fs {
-
+namespace fs
+{
   /**
    * Class to initialize file systems on block devices / partitions
    **/
   class Disk {
   public:
-
     class Err_not_mounted : public std::runtime_error {
       using runtime_error::runtime_error;
     };
 
-    struct Partition;
-    using on_parts_func = delegate<void(fs::error_t, std::vector<Partition>&)>;
     using on_init_func  = delegate<void(fs::error_t, File_system&)>;
-    using lba_t = uint32_t;
+    using on_parts_func = delegate<void(fs::error_t, std::vector<fs::Partition>&)>;
 
     enum partition_t {
       MBR = 0, //< Master Boot Record (0)
@@ -53,41 +34,16 @@ namespace fs {
       VBR4,
     };
 
-    struct Partition {
-      explicit Partition(const uint8_t  fl,  const uint8_t  Id,
-                         const uint32_t LBA, const uint32_t sz) noexcept
-      : flags     {fl},
-        id        {Id},
-        lba_begin {LBA},
-        sectors   {sz}
-      {}
-
-      uint8_t  flags;
-      uint8_t  id;
-      uint32_t lba_begin;
-      uint32_t sectors;
-
-      // true if the partition has boot code / is bootable
-      bool is_boot() const noexcept
-      { return flags & 0x1; }
-
-      // human-readable name of partition id
-      std::string name() const;
-
-      // logical block address of beginning of partition
-      uint32_t lba() const
-      { return lba_begin; }
-
-    }; //< struct Partition
-
-    //************** disk functions **************//
-
     // construct a disk with a given block-device
     explicit Disk(hw::Block_device&);
 
-    // returns the device the disk is using
-    hw::Block_device& dev() noexcept
-    { return device; }
+    std::string name() const {
+      return device.device_name();
+    }
+
+    auto device_id() const {
+      return device.id();
+    }
 
     // Returns true if the disk has no sectors
     bool empty() const noexcept
@@ -110,26 +66,28 @@ namespace fs {
       internal_init(part, func);
     }
 
-    std::string name() {
-      return device.device_name();
-    }
+    // returns true if a filesystem is initialized
+    bool fs_ready() const noexcept
+    { return filesys != nullptr; }
 
-    auto device_id() {
-      return device.id();
+    // Returns a reference to an initialized filesystem
+    // If no filesystem is initialized it will throw an error
+    File_system& fs()
+    {
+      if(UNLIKELY(not fs_ready()))
+      {
+        throw Err_not_mounted{"Filesystem not ready - make sure to init_fs before accessing"};
+      }
+      return *filesys;
     }
 
     // Creates a vector of the partitions on disk (see: on_parts_func)
     // Note: No file system needs to be initialized beforehand
     void partitions(on_parts_func func);
 
-    // returns true if a filesystem is initialized
-    bool fs_ready() const noexcept
-    { return (bool) filesys; }
-
-    // Returns a reference to a mounted filesystem
-    // If no filesystem is mounted, the results are undefined
-    File_system& fs() noexcept
-    { return *filesys; }
+    // returns the device the disk is using
+    hw::Block_device& dev() noexcept
+    { return device; }
 
   private:
     void internal_init(partition_t part, on_init_func func);

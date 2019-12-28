@@ -1,31 +1,28 @@
-FROM ubuntu:xenial
+FROM ubuntu:18.04
 
-RUN apt-get update && apt-get -y install \
-    git \
-    net-tools \
-    sudo \
-    wget \
-&& rm -rf /var/lib/apt/lists/*
+ARG clang_version=6.0
+RUN apt-get update && \
+    apt-get -y install \
+    clang-$clang_version \
+    cmake \
+    nasm \
+    curl \
+    git && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home -s /bin/bash ubuntu
-RUN adduser ubuntu sudo
-RUN echo -n 'ubuntu:ubuntu' | chpasswd
+# Install and configure Conan
+ARG conan_version=1_12_3
+RUN curl -Lo conan.deb https://dl.bintray.com/conan/installers/conan-ubuntu-64_$conan_version.deb && \
+    dpkg --install conan.deb && \
+    rm conan.deb
+RUN conan config install https://github.com/includeos/conan_config.git && \
+    conan config set general.default_profile=clang-$clang_version-linux-x86_64
 
-# Enable passwordless sudo for users under the "sudo" group
-RUN sed -i.bkp -e \
-      's/%sudo\s\+ALL=(ALL\(:ALL\)\?)\s\+ALL/%sudo ALL=NOPASSWD:ALL/g' \
-      /etc/sudoers
-
-USER ubuntu
-
-ADD . /home/ubuntu/IncludeOS
-WORKDIR /home/ubuntu/IncludeOS
-
-RUN sudo apt-get update && \
-    sudo do_bridge="" ./etc/install_all_source.sh \
-&& sudo rm -rf /var/lib/apt/lists/*
-
-VOLUME /service
-WORKDIR /service
-
-CMD ./run.sh
+# The files to be built must be hosted in a catalog called /service
+# Default is to install conan dependencies and build
+CMD mkdir -p /service/build && \
+    cd /service/build && \
+    conan install -g virtualenv .. && \
+    . ./activate.sh && \
+    cmake .. && \
+    cmake --build .

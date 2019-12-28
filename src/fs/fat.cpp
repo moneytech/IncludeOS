@@ -1,20 +1,18 @@
-//#define DEBUG
+
 #include <fs/fat.hpp>
 #include <fs/fat_internal.hpp>
 
 #include <fs/mbr.hpp>
 #include <cassert>
-#include <debug>
-
 #include <cstring>
 #include <locale>
-#include <kernel/syscalls.hpp> // for panic()
+#include <os.hpp> // for panic()
 
 #include <info>
 #include <common>
 
-//#undef debug
-//#define debug(...) printf(__VA_ARGS__)
+//#define FS_PRINT(fmt, ...)  printf(fmt, ##__VA_ARGS__)
+#define FS_PRINT(fmt, ...)  /** **/
 
 inline std::string trim_right_copy(
    const std::string& s,
@@ -43,27 +41,27 @@ namespace fs
           "Invalid sector size (%u) for FAT32 partition\n", sector_size);
       fprintf(stderr,
           "Are you initializing the correct partition?\n");
-      panic("FAT32: Invalid sector size");
+      os::panic("FAT32: Invalid sector size");
     }
 
     // Let's begin our incantation
     // To drive out the demons of old DOS we have to read some PBP values
-    debug("Bytes per sector: \t%u\n", bpb->bytes_per_sector);
-    debug("Sectors per cluster: \t%u\n", bpb->sectors_per_cluster);
-    debug("Reserved sectors: \t%u\n", bpb->reserved_sectors);
-    debug("Number of FATs: \t%u\n", bpb->fa_tables);
+    FS_PRINT("Bytes per sector: \t%u\n", bpb->bytes_per_sector);
+    FS_PRINT("Sectors per cluster: \t%u\n", bpb->sectors_per_cluster);
+    FS_PRINT("Reserved sectors: \t%u\n", bpb->reserved_sectors);
+    FS_PRINT("Number of FATs: \t%u\n", bpb->fa_tables);
 
-    debug("Small sectors (FAT16): \t%u\n", bpb->small_sectors);
+    FS_PRINT("Small sectors (FAT16): \t%u\n", bpb->small_sectors);
 
-    debug("Sectors per FAT: \t%u\n", bpb->sectors_per_fat);
-    debug("Sectors per Track: \t%u\n", bpb->sectors_per_track);
-    debug("Number of Heads: \t%u\n", bpb->num_heads);
-    debug("Hidden sectors: \t%u\n", bpb->hidden_sectors);
-    debug("Large sectors: \t%u\n", bpb->large_sectors);
-    debug("Disk number: \t0x%x\n", bpb->disk_number);
-    debug("Signature: \t0x%x\n", bpb->signature);
+    FS_PRINT("Sectors per FAT: \t%u\n", bpb->sectors_per_fat);
+    FS_PRINT("Sectors per Track: \t%u\n", bpb->sectors_per_track);
+    FS_PRINT("Number of Heads: \t%u\n", bpb->num_heads);
+    FS_PRINT("Hidden sectors: \t%u\n", bpb->hidden_sectors);
+    FS_PRINT("Large sectors: \t%u\n", bpb->large_sectors);
+    FS_PRINT("Disk number: \t0x%x\n", bpb->disk_number);
+    FS_PRINT("Signature: \t0x%x\n", bpb->signature);
 
-    debug("System ID: \t%.8s\n", bpb->system_id);
+    FS_PRINT("System ID: \t%.8s\n", bpb->system_id);
 
     // sector count
     if (bpb->small_sectors)
@@ -81,52 +79,52 @@ namespace fs
 
     // calculate index of first data sector
     this->data_index = bpb->reserved_sectors + (bpb->fa_tables * this->sectors_per_fat) + this->root_dir_sectors;
-    debug("First data sector: %u\n", this->data_index);
+    FS_PRINT("First data sector: %u\n", this->data_index);
 
     // number of reserved sectors is needed constantly
     this->reserved = bpb->reserved_sectors;
-    debug("Reserved sectors: %u\n", this->reserved);
+    FS_PRINT("Reserved sectors: %u\n", this->reserved);
 
     // number of sectors per cluster is important for calculating entry offsets
     this->sectors_per_cluster = bpb->sectors_per_cluster;
-    debug("Sectors per cluster: %u\n", this->sectors_per_cluster);
+    FS_PRINT("Sectors per cluster: %u\n", this->sectors_per_cluster);
 
     // calculate number of data sectors
     this->data_sectors = this->sectors - this->data_index;
-    debug("Data sectors: %u\n", this->data_sectors);
+    FS_PRINT("Data sectors: %u\n", this->data_sectors);
 
     // calculate total cluster count
     this->clusters = this->data_sectors / this->sectors_per_cluster;
-    debug("Total clusters: %u\n", this->clusters);
+    FS_PRINT("Total clusters: %u\n", this->clusters);
 
     // now that we're here, we can determine the actual FAT type
     // using the official method:
     if (this->clusters < 4085) {
       this->fat_type = FAT::T_FAT12;
       this->root_cluster = 2;
-      debug("The image is type FAT12, with %u clusters\n", this->clusters);
+      FS_PRINT("The image is type FAT12, with %u clusters\n", this->clusters);
     }
     else if (this->clusters < 65525) {
       this->fat_type = FAT::T_FAT16;
       this->root_cluster = 2;
-      debug("The image is type FAT16, with %u clusters\n", this->clusters);
+      FS_PRINT("The image is type FAT16, with %u clusters\n", this->clusters);
     }
     else {
       this->fat_type = FAT::T_FAT32;
       this->root_cluster = *(uint32_t*) &mbr->boot[33];
       this->root_cluster = 2;
-      debug("The image is type FAT32, with %u clusters\n", this->clusters);
-      //printf("Root dir entries: %u clusters\n", bpb->root_entries);
+      FS_PRINT("The image is type FAT32, with %u clusters\n", this->clusters);
+      FS_PRINT("Root dir entries: %u clusters\n", bpb->root_entries);
       //assert(bpb->root_entries == 0);
       //this->root_dir_sectors = 0;
       //this->data_index = bpb->reserved_sectors + bpb->fa_tables * this->sectors_per_fat;
     }
-    debug("Root cluster index: %u (sector %u)\n", this->root_cluster, cl_to_sector(root_cluster));
-    debug("System ID: %.8s\n", bpb->system_id);
+    FS_PRINT("Root cluster index: %u (sector %u)\n", this->root_cluster, cl_to_sector(root_cluster));
+    FS_PRINT("System ID: %.8s\n", bpb->system_id);
   }
 
-  void FAT::init(uint64_t base, uint64_t size, on_init_func on_init) {
-
+  void FAT::init(uint64_t base, uint64_t size, on_init_func on_init)
+  {
     this->lba_base = base;
     this->lba_size = size;
 
@@ -136,15 +134,15 @@ namespace fs
       hw::Block_device::on_read_func::make_packed(
       [this, on_init] (buffer_t data)
       {
-        auto* mbr = (MBR::mbr*) data.get();
+        auto* mbr = (MBR::mbr*) data->data();
         if (mbr == nullptr) {
           on_init({ error_t::E_IO, "Could not read MBR" }, *this);
           return;
         }
 
         // verify image signature
-        debug("OEM name: \t%s\n", mbr->oem_name);
-        debug("MBR signature: \t0x%x\n", mbr->magic);
+        FS_PRINT("OEM name: \t%s\n", mbr->oem_name);
+        FS_PRINT("MBR signature: \t0x%x\n", mbr->magic);
         if (UNLIKELY(mbr->magic != 0xAA55)) {
           on_init({ error_t::E_MNT, "Missing or invalid MBR signature" }, *this);
           return;
@@ -174,15 +172,14 @@ namespace fs
     );
   }
 
-  bool FAT::int_dirent(uint32_t  sector, const void* data, dirvector& dirents) {
-
+  bool FAT::int_dirent(uint32_t sector, const void* data, dirvector& dirents) const
+  {
     auto* root = (cl_dir*) data;
     bool  found_last = false;
 
     for (int i = 0; i < 16; i++) {
 
       if (UNLIKELY(root[i].shortname[0] == 0x0)) {
-        //printf("end of dir\n");
         found_last = true;
         // end of directory
         break;
@@ -203,6 +200,9 @@ namespace fs
             int  final_count = 0;
 
             int  total = L->long_index();
+            // ignore names we can't complete inside of one sector
+            if (i + total >= 16) return false;
+
             // go to the last entry and work backwards
             i += total-1;
             L += total-1;
@@ -225,24 +225,23 @@ namespace fs
               L--;
 
               if (UNLIKELY(final_count > 240)) {
-                debug("Suspicious long name length, breaking...\n");
+                FS_PRINT("Suspicious long name length, breaking...\n");
                 break;
               }
             }
 
             final_name[final_count] = 0;
-            debug("Long name: %s\n", final_name);
+            FS_PRINT("Long name: %s\n", final_name);
 
             i++; // skip over the long version
             // to the short version for the stats and cluster
             auto* D = &root[i];
             std::string dirname(final_name, final_count);
-            dirname = trim_right_copy(dirname);
 
             dirents.emplace_back(
                 this,
                 D->type(),
-                dirname,
+                std::move(dirname),
                 D->dir_cluster(root_cluster),
                 sector, // parent block
                 D->size(),
@@ -252,7 +251,7 @@ namespace fs
         }
         else {
           auto* D = &root[i];
-          debug("Short name: %.11s\n", D->shortname);
+          FS_PRINT("Short name: %.11s\n", D->shortname);
 
           std::string dirname((char*) D->shortname, 11);
           dirname = trim_right_copy(dirname);
@@ -260,7 +259,7 @@ namespace fs
           dirents.emplace_back(
               this,
               D->type(),
-              dirname,
+              std::move(dirname),
               D->dir_cluster(root_cluster),
               sector, // parent block
               D->size(),

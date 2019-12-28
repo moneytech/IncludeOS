@@ -1,19 +1,3 @@
-// This file is a part of the IncludeOS unikernel - www.includeos.org
-//
-// Copyright 2015-2016 Oslo and Akershus University College of Applied Sciences
-// and Alfred Bratterud
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 #include <common.cxx>
 #include <util/delegate.hpp>
@@ -223,6 +207,13 @@ CASE("A delegate can be moved")
 
 	size_t ret = del_b();
 	EXPECT(ret == v.size());
+  EXPECT_NOT(del_a);
+
+  user_class usr(1);
+  auto usr_del = usr.get_del();
+  EXPECT(usr_del);
+  auto usr_del2 = std::move(usr_del);
+  EXPECT_NOT(usr_del);
 }
 
 CASE("A delegate can be constructed with a class member function pointer")
@@ -242,11 +233,11 @@ CASE("A delegate can be const")
 {
 	using del_t = const delegate<int()>;
 
-	int default_val = 7;
-	auto const_test = [lest_env, default_val](del_t del)
+  int default_val = 7;
+  auto const_test = [lest_env, default_val](del_t del) mutable
 	{
 		int ret = del();
-		EXPECT(ret == default_val);
+    EXPECT(ret == default_val);
 	};
 
 	const_test([]() { return 7; });
@@ -262,7 +253,7 @@ CASE("The delegate operator() uses correct argument type forwarding")
 {
 	using del_t = delegate<count_ctor(count_ctor)>;
 
-	auto test_arg_fwd = [lest_env](del_t del)
+  auto test_arg_fwd = [lest_env](del_t del) mutable
 	{
 		auto cc_a = del(count_ctor{});
 		EXPECT(cc_a.copy_count == 0);
@@ -281,8 +272,8 @@ CASE("The delegate operator() uses correct argument type forwarding")
 
 	int val = 3;
 	test_arg_fwd(del_t{ [](count_ctor arg) { return arg; } });
-	test_arg_fwd(del_t{ [val](count_ctor arg) { return arg; } });
-	test_arg_fwd(del_t{ [&val](count_ctor arg) { return arg; } });
+  test_arg_fwd(del_t{ [val](count_ctor arg) { return arg; } });
+  test_arg_fwd(del_t{ [&val](count_ctor arg) { return arg; } });
 
 	count_ctor_wrap ccw{};
 	test_arg_fwd(del_t{ ccw, &count_ctor_wrap::foo });
@@ -312,7 +303,7 @@ CASE("A delegate can be constructed with any valid closure type")
 
 	int default_val = 3;
 	int inc_val = 4;
-	auto test_closure = [lest_env, default_val, inc_val](del_t del)
+  auto test_closure = [lest_env, default_val, inc_val](del_t del) mutable
 	{
 		int val = default_val;
 		int ret = del(val);
